@@ -1,0 +1,26 @@
+{
+  "extraKnownMarketplaces": {
+    "juxt-plugins": {
+      "source": {
+        "source": "github",
+        "repo": "juxt/claude-plugins"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "allium@juxt-plugins": true
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/allium-check.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}
