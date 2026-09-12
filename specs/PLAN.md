@@ -60,11 +60,18 @@ Harvested from the reference implementation; each item becomes a rule, a
 derived field or a config parameter.
 
 **Configuration** (persisted; the inversion from the SPA, where it sat in
-local storage): tracked repositories as `owner/name`, tracked members
-(logins), refresh cadence (**60 minutes by default**), show-drafts
-preference, and the classification thresholds. One configuration for the
-whole installation. Validation: non-empty repository list, non-empty member
-list, cadence within bounds.
+local storage): one global list of tracked repositories as `owner/name`, one
+general list of tracked members (logins) — members are not scoped per
+repository — the refresh cadence (**60 minutes by default**), the quiet
+windows, the show-drafts preference, and the classification thresholds. One
+configuration for the whole installation. Validation: non-empty repository
+list, non-empty member list, cadence within bounds.
+
+Configuration splits in two by *when it takes effect*, and the spec says so:
+**collection settings** (repositories, members, cadence, quiet windows) shape
+the next collection and nothing else; **presentation settings** (thresholds,
+show-drafts) apply to the snapshot already held, so changing a threshold
+reclassifies what is on screen without fetching anything.
 
 **Collection** (in memory; lost on restart, rebuilt by the first refresh).
 There is exactly **one snapshot**, owned by the server and shared by every
@@ -81,13 +88,26 @@ view of it:
   whether or not anyone is watching, and the operator can also trigger one on
   demand. A manual refresh while one is already running does not start a
   second.
+- **The server collects at startup**, so the snapshot is filled without
+  waiting for the first cadence tick.
+- **Quiet windows.** No scheduled refresh at night (22:00–07:00) or at the
+  weekend (Saturday and Sunday). The bounds and the days are config
+  parameters with those values as defaults. A manual refresh is always
+  honoured, quiet window or not — the windows suppress the schedule, not the
+  operator.
+- **Saving the configuration never triggers a collection.** The operator
+  refreshes manually when they want the change reflected, so a repository
+  removed from the list keeps its PRs on screen until the next collection.
 - **A failure never destroys what was collected.** Each source keeps its last
   successful result and the time it was obtained; a failed collection leaves
   that data in place and records the failure. The dashboard therefore always
   shows the last known good state, alongside how old it is and which sources
   failed to refresh.
-- Each response reports the remaining API budget; exhaustion is a specified
-  behaviour, not an accident.
+- **Quota exhaustion suspends, it does not fail.** Each response reports the
+  remaining API budget and when it replenishes; when the budget runs out the
+  cycle waits for the reset and resumes from where it stopped, keeping
+  everything collected so far. The dashboard says the collection is waiting on
+  quota rather than reporting an error.
 
 **Classification** (the heart of the spec):
 
@@ -173,16 +193,25 @@ These are settled and are written as behaviour, not as open questions:
 - **Failures preserve data.** A failed collection keeps the previously
   collected data and reports the failure; the dashboard shows the last known
   good state and its age.
+- **Collection at startup, then on a schedule with quiet windows.** The
+  server collects as soon as it starts; the scheduled refresh is suppressed
+  at night (22:00–07:00) and at the weekend. Manual refresh is always
+  available.
+- **Quota exhaustion is a wait, not a failure.** The cycle pauses until the
+  GitHub budget replenishes and then continues.
+- **One global repository list, one general member list** — members are not
+  scoped per repository.
+- **Configuration changes do not refresh.** Collection settings take effect
+  at the next collection, which the operator triggers; presentation settings
+  (thresholds, drafts) apply immediately to the snapshot in hand.
 
 ## 8. Questions still open (they become `open question` entries)
 
-1. **Cold start.** On restart, before the first refresh completes — empty
-   dashboard, or a "collecting" state? Does the server refresh eagerly at
-   startup, or wait for the first cadence tick?
-2. **Rate limit.** When the GitHub budget runs low, does the cycle skip,
-   slow down, or refuse, and what does the operator see?
-3. **Members vs. repositories.** One list each, or per-repository member
-   lists?
-4. **Configuration changes.** Does saving a configuration trigger an
-   immediate refresh, and does removing a repository drop its PRs at once or
-   only at the next collection?
+1. **Which clock bounds the quiet windows?** The server's local time, or a
+   timezone held in the configuration? It decides what "22:00" means for a
+   container whose clock is UTC.
+2. **A cycle still running when a quiet window opens** — does it finish, or
+   is it suspended until the window closes?
+3. **What the dashboard shows during the first collection**, before any
+   source has returned: an empty dashboard or an explicit "collecting"
+   state.
