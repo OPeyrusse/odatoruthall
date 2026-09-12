@@ -62,14 +62,14 @@ derived field or a config parameter.
 **Configuration** (persisted; the inversion from the SPA, where it sat in
 local storage): one global list of tracked repositories as `owner/name`, one
 general list of tracked members (logins) — members are not scoped per
-repository — the refresh cadence (**60 minutes by default**), the quiet
-windows, the show-drafts preference, and the classification thresholds. One
+repository — the refresh cadence (**60 minutes by default**), the collection
+window, the show-drafts preference, and the classification thresholds. One
 configuration for the whole installation. Validation: non-empty repository
 list, non-empty member list, cadence within bounds.
 
 Configuration splits in two by *when it takes effect*, and the spec says so:
-**collection settings** (repositories, members, cadence, quiet windows) shape
-the next collection and nothing else; **presentation settings** (thresholds,
+**collection settings** (repositories, members, cadence, collection window)
+shape the next collection and nothing else; **presentation settings** (thresholds,
 show-drafts) apply to the snapshot already held, so changing a threshold
 reclassifies what is on screen without fetching anything.
 
