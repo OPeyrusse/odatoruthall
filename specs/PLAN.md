@@ -69,9 +69,9 @@ list, non-empty member list, cadence within bounds.
 
 Configuration splits in two by *when it takes effect*, and the spec says so:
 **collection settings** (repositories, members, cadence, collection window)
-shape the next collection and nothing else; **presentation settings** (thresholds,
-show-drafts) apply to the snapshot already held, so changing a threshold
-reclassifies what is on screen without fetching anything.
+shape the next collection and nothing else; **presentation settings**
+(thresholds, show-drafts) apply to the snapshot already held, so changing a
+threshold reclassifies what is on screen without fetching anything.
 
 **Collection** (in memory; lost on restart, rebuilt by the first refresh).
 There is exactly **one snapshot**, owned by the server and shared by every
