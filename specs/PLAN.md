@@ -89,12 +89,16 @@ view of it:
   demand. A manual refresh while one is already running does not start a
   second.
 - **The server collects at startup**, so the snapshot is filled without
-  waiting for the first cadence tick.
-- **Quiet windows.** No scheduled refresh at night (22:00–07:00) or at the
-  weekend (Saturday and Sunday). The bounds and the days are config
-  parameters with those values as defaults. A manual refresh is always
-  honoured, quiet window or not — the windows suppress the schedule, not the
-  operator.
+  waiting for the first cadence tick. Until the first source returns, the
+  dashboard says it is collecting rather than showing an empty state.
+- **Collection window.** The scheduled refresh only starts between **05:00
+  and 21:00 UTC**, Monday to Friday — nothing at night, nothing at the
+  weekend. All times are UTC, so the behaviour does not depend on where the
+  container runs. The bounds and the active days are config parameters with
+  those values as defaults. A manual refresh is always honoured, inside the
+  window or out — the window suppresses the schedule, not the operator.
+- **A collection in progress runs to completion**, even when the window
+  closes underneath it; the window governs when a cycle *starts*.
 - **Saving the configuration never triggers a collection.** The operator
   refreshes manually when they want the change reflected, so a repository
   removed from the list keeps its PRs on screen until the next collection.
@@ -193,10 +197,11 @@ These are settled and are written as behaviour, not as open questions:
 - **Failures preserve data.** A failed collection keeps the previously
   collected data and reports the failure; the dashboard shows the last known
   good state and its age.
-- **Collection at startup, then on a schedule with quiet windows.** The
-  server collects as soon as it starts; the scheduled refresh is suppressed
-  at night (22:00–07:00) and at the weekend. Manual refresh is always
-  available.
+- **Collection at startup, then on a schedule bounded by a window.** The
+  server collects as soon as it starts and shows a "collecting" state until
+  the first result lands. Scheduled refreshes start only between 05:00 and
+  21:00 UTC on weekdays; a cycle already running when the window closes
+  finishes. Manual refresh is always available.
 - **Quota exhaustion is a wait, not a failure.** The cycle pauses until the
   GitHub budget replenishes and then continues.
 - **One global repository list, one general member list** — members are not
@@ -205,13 +210,9 @@ These are settled and are written as behaviour, not as open questions:
   at the next collection, which the operator triggers; presentation settings
   (thresholds, drafts) apply immediately to the snapshot in hand.
 
-## 8. Questions still open (they become `open question` entries)
+## 8. Questions still open
 
-1. **Which clock bounds the quiet windows?** The server's local time, or a
-   timezone held in the configuration? It decides what "22:00" means for a
-   container whose clock is UTC.
-2. **A cycle still running when a quiet window opens** — does it finish, or
-   is it suspended until the window closes?
-3. **What the dashboard shows during the first collection**, before any
-   source has returned: an empty dashboard or an explicit "collecting"
-   state.
+None for gitdesk: every question this plan raised is answered in §7, so the
+slices can be written without parking an `open question`. New ones will
+surface while eliciting — that is what the section is for — and worklog
+brings its own once its behaviour is described.
