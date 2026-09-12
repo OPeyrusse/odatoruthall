@@ -41,7 +41,7 @@ dependency order — producers before consumers.
 
 | File | Owns | Uses |
 |---|---|---|
-| `specs/shared/access.allium` | `Operator` actor, `GithubAccess` / `JiraAccess` external entities, connection-check rules, credential states (absent / unverified / valid / rejected), rate-limit budget | — |
+| `specs/shared/access.allium` | The single `Operator` actor, `GithubAccess` / `JiraAccess` external entities, connection-check rules, credential states (absent / unverified / valid / rejected), rate-limit budget | — |
 | `specs/shared/config.allium` | `Configuration` entity (tracked repositories, tracked members, refresh cadence, thresholds, display preferences), validation rules, persistence guarantee across restarts, the settings surface | `access` |
 | `specs/shared/shell.allium` | The single entry surface both applications hang off: navigation between the two dashboards, connection badges, `related` edges | `config`, `access`, both app surfaces |
 | `specs/gitdesk/pull-request.allium` | `PullRequest` entity and variants — author, assignees, reviews, commits, check rollup, labels, draft, mergeable, auto-merge, comment count — plus every derived classification | `config` |
@@ -61,11 +61,14 @@ derived field or a config parameter.
 
 **Configuration** (persisted; the inversion from the SPA, where it sat in
 local storage): tracked repositories as `owner/name`, tracked members
-(logins), refresh cadence, show-drafts preference, and the classification
-thresholds. Validation: non-empty repository list, non-empty member list,
-cadence within bounds.
+(logins), refresh cadence (**60 minutes by default**), show-drafts
+preference, and the classification thresholds. One configuration for the
+whole installation. Validation: non-empty repository list, non-empty member
+list, cadence within bounds.
 
-**Collection** (in memory; lost on restart, rebuilt by the first refresh):
+**Collection** (in memory; lost on restart, rebuilt by the first refresh).
+There is exactly **one snapshot**, owned by the server and shared by every
+view of it:
 
 - Four sources — open PRs per tracked repository, PRs mentioning the operator,
   PRs with a review requested from the operator, PRs merged within a recent
@@ -74,9 +77,15 @@ cadence within bounds.
   exhaustion before the next starts.
 - A PR is *of interest* when its author or one of its assignees is the
   operator or a tracked member.
-- Every source carries its own state (loading / ok / failed); a failed source
-  must not empty the dashboard.
-- Refresh runs on the configured cadence and on demand.
+- **Refresh is the server's own business**: it runs on the configured cadence
+  whether or not anyone is watching, and the operator can also trigger one on
+  demand. A manual refresh while one is already running does not start a
+  second.
+- **A failure never destroys what was collected.** Each source keeps its last
+  successful result and the time it was obtained; a failed collection leaves
+  that data in place and records the failure. The dashboard therefore always
+  shows the last known good state, alongside how old it is and which sources
+  failed to refresh.
 - Each response reports the remaining API budget; exhaustion is a specified
   behaviour, not an accident.
 
@@ -116,7 +125,8 @@ Spec-first: there is no code to distil from, so each slice is built with
 `/elicit`, checked, then assembled.
 
 1. `shared/access` + `shared/config` — the vocabulary everything else
-   references. Settle the identity question (§7) here.
+   references, including the single-operator identity and the refresh
+   cadence.
 2. `gitdesk/pull-request` — entity and classifications, thresholds to config.
 3. `gitdesk/collection` — the cycle, failures, freshness, budget.
 4. `gitdesk/dashboard` — surfaces and counts.
@@ -150,22 +160,29 @@ Recorded here so the decisions are not lost, and so nothing leaks into the
   persisted with the configuration.
 - **Packaging.** One Docker image running the single server locally.
 
-## 7. Questions to settle (they become `open question` entries)
+## 7. Decisions taken
 
-1. **Identity.** A token from the environment means one operator. Is "me"
-   always the token owner, and is the configuration global rather than
-   per-user? If several people open the dashboard, do they share one snapshot
-   and one configuration?
-2. **Refresh ownership.** Does the backend refresh on its own cadence
-   regardless of viewers, or only while someone is watching?
-3. **Cold start.** On restart, before the first refresh completes — empty
+These are settled and are written as behaviour, not as open questions:
+
+- **One operator.** The installation serves a single user: one GitHub token,
+  one Jira token, one configuration, one snapshot. "Me" is always the token
+  owner, so no rule needs to distinguish a viewer from the operator.
+- **Server-owned refresh.** The server refreshes on the cadence held in its
+  configuration — 60 minutes by default — independently of anyone watching,
+  and exposes a manual refresh the operator can trigger at any time.
+- **Failures preserve data.** A failed collection keeps the previously
+  collected data and reports the failure; the dashboard shows the last known
+  good state and its age.
+
+## 8. Questions still open (they become `open question` entries)
+
+1. **Cold start.** On restart, before the first refresh completes — empty
    dashboard, or a "collecting" state? Does the server refresh eagerly at
-   startup?
-4. **Rate limit.** When the GitHub budget runs low, does the cycle skip,
-   slow down, or refuse, and what does the viewer see?
-5. **Partial failure.** One repository fails while the others succeed: keep
-   the previous data for that repository, or show it as unavailable?
-6. **Members vs. repositories.** Are they one list each, or per-repository
-   member lists?
-7. **Configuration history.** Does a configuration change trigger an
-   immediate refresh, and does removing a repository drop its PRs at once?
+   startup, or wait for the first cadence tick?
+2. **Rate limit.** When the GitHub budget runs low, does the cycle skip,
+   slow down, or refuse, and what does the operator see?
+3. **Members vs. repositories.** One list each, or per-repository member
+   lists?
+4. **Configuration changes.** Does saving a configuration trigger an
+   immediate refresh, and does removing a repository drop its PRs at once or
+   only at the next collection?
