@@ -1,0 +1,205 @@
+-- allium: 3
+--
+-- Dashboard — what gitdesk shows the operator: four groups of counts, the
+-- lists behind them, and one pull request in detail.
+--
+-- Every group counts from the one snapshot the installation holds, reading the
+-- classifications as they stand. Nothing here fetches anything: a count that
+-- changes because a threshold changed is the same snapshot, classified again.
+--
+-- Drafts are always counted and only listed when the operator asks for them.
+-- Lists are ordered by most recent activity first.
+
+use "../shared/access.allium" as access
+use "../shared/config.allium" as settings
+use "./pull-request.allium" as prs
+use "./collection.allium" as collection
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface MyWork {
+    -- The operator's own business: what they wrote, what waits for them, what
+    -- was handed to them, and what has come back to them.
+    facing operator: access/Operator
+
+    let mine = collection/snapshot.collected_pull_requests
+
+    let authored = mine where authored_by(operator.account_login) and is_open
+    let to_review = mine
+        where review_requested_from(operator.account_login) and is_open
+    let assigned = mine where assigned_to(operator.account_login) and is_open
+    let addressed = mine where addressed_for(operator.account_login) and is_open
+
+    let listed = by_recent_activity(authored + to_review + assigned + addressed)
+        where is_listable
+
+    exposes:
+        operator.account_login
+        authored.count
+        to_review.count
+        assigned.count
+        addressed.count
+        for pull_request in listed:
+            pull_request.repository
+            pull_request.number
+            pull_request.facts.title
+            pull_request.facts.author
+            pull_request.facts.is_draft
+            pull_request.facts.updated_at
+            pull_request.head_check
+            pull_request.is_approved
+
+    related:
+        for pull_request in listed:
+            PullRequestDetail(pull_request)
+
+    @guarantee DraftsAreCountedAndHidden
+        -- A draft counts towards every group it belongs to, and appears in the
+        -- list only when the operator has asked to see drafts.
+
+    @guarantee AddressedMeansBackInMyCourt
+        -- A pull request is *addressed* for the operator when they asked for
+        -- changes and commits have landed since that they have not reviewed.
+}
+
+surface Monitoring {
+    -- The pull requests worth a second look: they have been open too long,
+    -- argued over, reworked too often, or approved and going nowhere.
+    facing operator: access/Operator
+
+    let watched = collection/snapshot.collected_pull_requests
+
+    let stuck = watched where is_stuck
+    let aging = watched where is_aging
+    let conflicting = watched where is_conflicting
+    let difficult = watched where is_difficult
+
+    let listed = by_recent_activity(stuck + aging + conflicting + difficult)
+        where is_listable
+
+    exposes:
+        operator.account_login
+        stuck.count
+        aging.count
+        conflicting.count
+        difficult.count
+        for pull_request in listed:
+            pull_request.repository
+            pull_request.number
+            pull_request.facts.title
+            pull_request.facts.author
+            pull_request.facts.comment_count
+            pull_request.facts.commits.count
+            pull_request.age
+            pull_request.head_check
+            pull_request.is_stuck
+            pull_request.is_aging
+            pull_request.is_conflicting
+            pull_request.is_difficult
+
+    related:
+        for pull_request in listed:
+            PullRequestDetail(pull_request)
+
+    @guarantee ThresholdsApplyOnSight
+        -- These groups are recomputed from the snapshot in hand whenever the
+        -- thresholds change; no collection is needed to see the new grouping.
+}
+
+surface MergeTrain {
+    -- What is on its way in, and what has just landed.
+    facing operator: access/Operator
+
+    let watched = collection/snapshot.collected_pull_requests
+
+    let merging = watched where is_merging
+    let just_merged = watched where is_recently_merged
+
+    let listed = by_recent_activity(merging + just_merged) where is_listable
+
+    exposes:
+        operator.account_login
+        merging.count
+        just_merged.count
+        for pull_request in listed:
+            pull_request.repository
+            pull_request.number
+            pull_request.facts.title
+            pull_request.facts.author
+            pull_request.facts.auto_merge_enabled
+            pull_request.facts.merged_at
+            pull_request.head_check
+            pull_request.is_merging
+            pull_request.is_recently_merged
+
+    related:
+        for pull_request in listed:
+            PullRequestDetail(pull_request)
+
+    @guarantee MergedFadesWithTheWindow
+        -- A merged pull request stays in the merge train until it falls
+        -- outside the merged window, then leaves it without being collected
+        -- again.
+}
+
+surface TeamWork {
+    -- The tracked members, and what each of them has in flight.
+    facing operator: access/Operator
+
+    exposes:
+        operator.account_login
+        settings/current.tracked_members.count
+        for member in settings/current.tracked_members:
+            member
+            collection/snapshot.authored_by(member).count
+            collection/snapshot.drafted_by(member).count
+            collection/snapshot.assigned_to(member).count
+
+    @guarantee MembersAreNotScopedToRepositories
+        -- The member list is one general list: a member counts across every
+        -- tracked repository, not per repository.
+}
+
+surface PullRequestDetail {
+    -- One pull request, with everything the dashboard knows about it.
+    facing operator: access/Operator
+
+    context pull_request: prs/PullRequest
+
+    exposes:
+        operator.account_login
+        pull_request.repository
+        pull_request.number
+        pull_request.facts.title
+        pull_request.facts.url
+        pull_request.facts.author
+        pull_request.facts.assignees
+        pull_request.facts.requested_reviewers
+        pull_request.facts.labels
+        pull_request.facts.is_draft
+        pull_request.facts.state
+        pull_request.facts.mergeable
+        pull_request.facts.auto_merge_enabled
+        pull_request.facts.comment_count
+        pull_request.facts.opened_at
+        pull_request.facts.updated_at
+        pull_request.facts.merged_at
+        pull_request.age
+        pull_request.head_check
+        pull_request.is_approved
+        pull_request.change_requests.count
+        pull_request.awaiting_rereview
+        pull_request.is_aging
+        pull_request.is_conflicting
+        pull_request.is_difficult
+        pull_request.is_stuck
+        pull_request.is_merging
+        pull_request.is_recently_merged
+        pull_request.last_seen_at
+
+    @guarantee ShownAsLastCollected
+        -- The detail is the snapshot's view of the pull request, as of the
+        -- last collection that saw it -- not a fresh read of GitHub.
+}

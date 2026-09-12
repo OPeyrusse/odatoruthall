@@ -1,0 +1,57 @@
+-- allium: 3
+--
+-- Shell — the single entry the operator lands on, and the one place that says
+-- which applications this installation runs and whether it can reach what they
+-- depend on.
+--
+-- Two applications hang off this shell: gitdesk, specified here, and worklog,
+-- whose surfaces join the navigation when its slice is written. The Jira badge
+-- is already shown, because whether Jira is reachable is worth knowing before
+-- the application that needs it exists.
+
+use "./access.allium" as access
+use "./config.allium" as settings
+use "../gitdesk/collection.allium" as collection
+use "../gitdesk/dashboard.allium" as gitdesk
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface Shell {
+    facing operator: access/Operator
+
+    exposes:
+        operator.account_login
+        operator.status
+        access/jira_connection.status
+        access/jira_connection.account_login
+        access/github_budget.status
+        access/github_budget.remaining
+        access/github_budget.resets_at
+        access/github_budget.is_known
+        settings/current.updated_at
+        collection/snapshot.has_ever_collected
+        collection/snapshot.oldest_success_at
+        collection/snapshot.failed_sources.count
+
+    -- The navigation. The checker does not resolve surface names across
+    -- modules (allium-cli 3.6.1), so it reports these edges as unknown names;
+    -- they are the shell's whole purpose and stay.
+    related:
+        gitdesk/MyWork
+        gitdesk/Monitoring
+        gitdesk/MergeTrain
+        gitdesk/TeamWork
+        collection/CollectionStatus
+        settings/Settings
+
+    @guarantee OneOperatorThroughout
+        -- Both applications are the same operator's: the GitHub badge names
+        -- the owner of the GitHub credential, and every surface below serves
+        -- that operator.
+
+    @guarantee BadgesSayWhatIsReachable
+        -- The connection badges say whether each service is reachable and, for
+        -- GitHub, how much API budget is left before collection has to wait.
+}

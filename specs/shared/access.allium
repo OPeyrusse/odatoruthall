@@ -1,0 +1,240 @@
+-- allium: 3
+--
+-- Access — who operates this installation, which services it reaches, and the
+-- state of the credentials that reach them.
+--
+-- One installation serves one operator: one GitHub credential, one Jira
+-- credential, one configuration, one snapshot. "Me" is always the owner of the
+-- valid GitHub credential, so no rule anywhere needs to tell a viewer from the
+-- operator.
+--
+-- How the credentials arrive is not specified here. What is specified is that
+-- their presence and their validity are observable, and that they change what
+-- the operator sees.
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity GithubAccess {
+    -- GitHub, reached with the operator's credential. What it answers is
+    -- observed here; how it behaves is its own business.
+    account_login: String
+    budget_remaining: Integer
+    budget_resets_at: Timestamp
+}
+
+external entity JiraAccess {
+    -- Jira, reached with the operator's credential. Only the connection is
+    -- described here; logging work against it belongs to the worklog slice.
+    account_login: String
+}
+
+external entity Installation {
+    -- The running installation. It starts, it stops, and nothing it collected
+    -- crosses from one run to the next.
+    started_at: Timestamp
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum Service { github | jira }
+
+enum ConnectionStatus {
+    absent          -- no credential has been offered
+    | unverified    -- a credential is held but has not been exercised
+    | valid         -- the credential was accepted and named its owner
+    | rejected      -- the credential was refused
+}
+
+enum AccessFailure {
+    credential_rejected     -- the service refused the credential
+    | service_unreachable   -- the service did not answer
+    | service_error         -- the service answered, but with an error
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity Connection {
+    service: Service
+    status: ConnectionStatus
+    account_login: String?          -- known only once the credential is valid
+    last_checked_at: Timestamp?
+    last_refusal: AccessFailure?
+
+    is_usable: status = valid
+
+    transitions status {
+        absent -> unverified
+        unverified -> valid
+        unverified -> rejected
+        valid -> rejected
+        rejected -> valid
+    }
+}
+
+entity GithubBudget {
+    -- The API budget GitHub reports on every answer it gives. It is not
+    -- rationed here, only observed: collection waits when it runs out.
+    status: available | exhausted
+    remaining: Integer
+    resets_at: Timestamp?
+    observed_at: Timestamp?
+
+    is_known: observed_at != null
+
+    transitions status {
+        available -> exhausted
+        exhausted -> available
+    }
+}
+
+------------------------------------------------------------
+-- Defaults
+------------------------------------------------------------
+
+default Connection github_connection = { service: github, status: absent }
+
+default Connection jira_connection = { service: jira, status: absent }
+
+default GithubBudget github_budget = { status: available, remaining: 0 }
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule CredentialPresented {
+    when: CredentialPresented(connection)
+    requires: connection.status = absent
+    ensures:
+        connection.status = unverified
+        ConnectionCheckRequested(connection: connection)
+}
+
+rule ConnectionVerified {
+    when: ConnectionCheckSucceeded(connection, login)
+    requires: connection.status in {unverified, rejected}
+    ensures:
+        connection.status = valid
+        connection.account_login = login
+        connection.last_checked_at = now
+        connection.last_refusal = null
+        ConnectionEstablished(connection: connection, login: login)
+}
+
+rule ConnectionRefused {
+    when: ConnectionCheckRefused(connection, failure)
+    requires: connection.status in {unverified, valid}
+    ensures:
+        connection.status = rejected
+        connection.account_login = null
+        connection.last_checked_at = now
+        connection.last_refusal = failure
+        AccessLost(connection: connection, failure: failure)
+}
+
+rule GithubBudgetRunsOut {
+    when: GithubBudgetObserved(budget, remaining, resets_at)
+    requires: budget.status = available
+    requires: remaining <= 0
+    ensures:
+        budget.remaining = remaining
+        budget.resets_at = resets_at
+        budget.observed_at = now
+        budget.status = exhausted
+        GithubBudgetExhausted(budget: budget, resets_at: resets_at)
+}
+
+rule GithubBudgetHasRoom {
+    when: GithubBudgetObserved(budget, remaining, resets_at)
+    requires: remaining > 0
+    ensures:
+        budget.remaining = remaining
+        budget.resets_at = resets_at
+        budget.observed_at = now
+        budget.status = available
+}
+
+rule GithubBudgetReplenishes {
+    when: budget: GithubBudget.resets_at <= now
+    requires: budget.status = exhausted
+    ensures:
+        budget.status = available
+        GithubBudgetReplenished(budget: budget)
+
+    @guidance
+        -- The budget stays at its last observed remaining count until the next
+        -- answer from GitHub corrects it; what changes here is only that the
+        -- installation may start asking again.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant OneConnectionPerService {
+    for a in Connections:
+        for b in Connections:
+            a != b implies a.service != b.service
+}
+
+------------------------------------------------------------
+-- Actor Declarations
+------------------------------------------------------------
+
+actor Operator {
+    identified_by: Connection where service = github and status = valid
+}
+
+actor GithubGateway {
+    identified_by: GithubAccess
+}
+
+actor JiraGateway {
+    identified_by: JiraAccess
+}
+
+actor Runtime {
+    identified_by: Installation
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface GithubConnectionIntegration {
+    facing gateway: GithubGateway
+
+    exposes:
+        github_connection.status
+        github_connection.account_login
+        github_budget.remaining
+        github_budget.resets_at
+
+    provides:
+        CredentialPresented(github_connection)
+        ConnectionCheckSucceeded(github_connection, gateway.account_login)
+        ConnectionCheckRefused(github_connection, credential_rejected)
+        GithubBudgetObserved(github_budget, gateway.budget_remaining, gateway.budget_resets_at)
+
+    @guarantee EveryAnswerCarriesTheBudget
+        -- GitHub reports the remaining budget and its reset time on every
+        -- answer, so the installation always knows how much room it has left.
+}
+
+surface JiraConnectionIntegration {
+    facing gateway: JiraGateway
+
+    exposes:
+        jira_connection.status
+        jira_connection.account_login
+
+    provides:
+        CredentialPresented(jira_connection)
+        ConnectionCheckSucceeded(jira_connection, gateway.account_login)
+        ConnectionCheckRefused(jira_connection, credential_rejected)
+}
