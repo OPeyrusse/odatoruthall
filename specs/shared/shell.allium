@@ -4,15 +4,16 @@
 -- which applications this installation runs and whether it can reach what they
 -- depend on.
 --
--- Two applications hang off this shell: gitdesk, specified here, and worklog,
--- whose surfaces join the navigation when its slice is written. The Jira badge
--- is already shown, because whether Jira is reachable is worth knowing before
--- the application that needs it exists.
+-- Two applications hang off this shell: gitdesk, which watches other people's
+-- pull requests, and worklog, which is the operator's own time. The Jira badge
+-- serves both -- gitdesk never needs Jira, and worklog cannot log a minute
+-- without it.
 
 use "./access.allium" as access
 use "./config.allium" as settings
 use "../gitdesk/collection.allium" as collection
 use "../gitdesk/dashboard.allium" as gitdesk
+use "../worklog/timesheet.allium" as worklog
 
 ------------------------------------------------------------
 -- Surfaces
@@ -44,12 +45,18 @@ surface Shell {
         gitdesk/MergeTrain
         gitdesk/TeamWork
         collection/CollectionStatus
+        worklog/Timesheet
         settings/Settings
 
     @guarantee OneOperatorThroughout
         -- Both applications are the same operator's: the GitHub badge names
         -- the owner of the GitHub credential, and every surface below serves
         -- that operator.
+
+    @guarantee EachApplicationSaysWhatItNeeds
+        -- gitdesk works with GitHub alone; worklog needs Jira as well, and
+        -- says so through the Jira badge rather than by failing when the
+        -- operator tries to log time.
 
     @guarantee BadgesSayWhatIsReachable
         -- The connection badges say whether each service is reachable and, for

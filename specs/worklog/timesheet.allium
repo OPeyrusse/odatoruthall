@@ -1,0 +1,179 @@
+-- allium: 3
+--
+-- The timesheet — what the operator sees of their own work: five working days
+-- at a time, what each day adds up to, and what it is made of.
+--
+-- The window slides. It is the last five working days, Monday to Friday, in
+-- UTC, ending with today when today is one of them and with last Friday when
+-- it is not. It is read from the clock, never stored, so the week moves on its
+-- own and yesterday is still there to be filled in.
+--
+-- Every day in the window can be filled, not only today: that is the point of
+-- showing five of them. What is already filled is shown as it was entered --
+-- the text the operator typed, the total it adds up to, and whether Jira has
+-- it yet.
+
+use "../shared/access.allium" as access
+use "./work-item.allium" as items
+use "./worklog.allium" as worklog
+use "./discovery.allium" as discovery
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface Timesheet {
+    -- The five days, side by side: the total on each, and the tasks that make
+    -- it up.
+    facing operator: access/Operator
+
+    let days = by_day(worklog/WorkDays
+        where within_timesheet_window(starts_at, now, worklog/config.timesheet_days))
+
+    let week_total = total_duration(days -> total_logged)
+
+    exposes:
+        operator.account_login
+        access/jira_connection.status
+        week_total
+        days.count
+        for day in days:
+            day.starts_at
+            day.total_logged
+            day.entries.count
+            day.has_time_to_submit
+            day.is_in_flight
+            day.is_settled
+            day.has_been_scanned
+            day.last_scanned_at
+            for entry in by_task(day.entries):
+                entry.work_item.key
+                entry.work_item.facts.summary
+                entry.entered_text
+                entry.duration
+                entry.status
+                entry.origin
+                entry.is_filled
+                entry.last_failure
+
+    provides:
+        OperatorOpensTimesheet()
+        for day in days:
+            OperatorNamesTask(day, items/WorkItem.key)
+            OperatorSubmitsDay(day)
+            OperatorRequestsScan(day)
+        for day in days:
+            for entry in day.entries:
+                OperatorEntersTime(entry, entry.entered_text)
+                OperatorRemovesEntry(entry)
+
+    related:
+        for day in days:
+            DaySheet(day)
+
+    @guarantee FiveWorkingDaysAlwaysShow
+        -- The window is the last five working days, Monday to Friday in UTC,
+        -- today included when today is a working day. It slides with the
+        -- clock: a day leaves the window without anything being done to it,
+        -- and what was logged on it stays logged.
+
+    @guarantee PastDaysAreFillable
+        -- Every day in the window takes time, not just today. A day filled
+        -- days ago reads back exactly as it was entered, so the operator can
+        -- see what is still missing and finish it.
+
+    @guarantee TimeIsTypedAsText
+        -- Time is entered as text -- "1h 30m" -- and shown back as it was
+        -- typed, alongside the total it contributes to. Text that says no
+        -- length of time is refused and changes nothing.
+
+    @guarantee TotalsAreTheSumOfTheDay
+        -- A day's total is the time on its tasks, whatever their state:
+        -- drafted, on its way to Jira, or acknowledged. The operator can
+        -- always tell how much of the total Jira does not have yet.
+}
+
+surface DaySheet {
+    -- One day, in full: its tasks, its time, its last scan, and what that scan
+    -- found but could not attribute.
+    facing operator: access/Operator
+
+    context day: worklog/WorkDay
+
+    let scans = discovery/DayScans where day = day
+    let last_scan = most_recent(scans)
+    let loose_ends = last_scan.unattributed_activities
+
+    exposes:
+        operator.account_login
+        day.starts_at
+        day.total_logged
+        day.has_time_to_submit
+        day.is_in_flight
+        day.is_settled
+        day.drafted_entries.count
+        day.submitted_entries.count
+        day.acknowledged_entries.count
+        day.rejected_entries.count
+        day.last_scanned_at
+        for entry in by_task(day.entries):
+            entry.work_item.key
+            entry.work_item.facts.summary
+            entry.work_item.facts.status
+            entry.work_item.facts.url
+            entry.origin
+            entry.entered_text
+            entry.duration
+            entry.status
+            entry.submitted_at
+            entry.acknowledged_at
+            entry.last_failure
+        last_scan.finished_at
+        last_scan.failed_tasks.count
+        for activity in loose_ends:
+            activity.observation.source
+            activity.observation.happened_at
+            activity.observation.reference
+            activity.observation.title
+            activity.observation.issue_keys
+
+    provides:
+        OperatorNamesTask(day, items/WorkItem.key)
+        OperatorRequestsScan(day)
+        OperatorSubmitsDay(day)
+        for entry in day.entries:
+            OperatorEntersTime(entry, entry.entered_text)
+            OperatorRemovesEntry(entry)
+
+    -- The checker does not resolve surface names across modules
+    -- (allium-cli 3.6.1), so it reports this edge as an unknown name; it is
+    -- the way to the scan in flight and stays.
+    related:
+        discovery/DayScanStatus
+
+    @guarantee ScannedWorkIsOnlyASuggestion
+        -- What a scan found is a task on the day with no time on it. The
+        -- operator says how long they spent; nothing else does.
+
+    @guarantee LooseEndsAreShownNotDropped
+        -- Activity the scan could not attribute to an issue is still shown,
+        -- with what it was and when it happened, so the operator can put the
+        -- right task on the day themselves.
+
+    @guarantee WhatJiraHasIsVisible
+        -- Each task says whether its time is drafted here, on its way, held by
+        -- Jira, or refused -- and why it was refused.
+}
+
+surface WorklogPersistence {
+    facing runtime: access/Runtime
+
+    exposes:
+        runtime.started_at
+
+    @guarantee TheWorklogOutlivesTheProcess
+        -- Days, tasks, the text entered against them and what Jira has
+        -- acknowledged all survive a restart. Only what a scan observed is
+        -- transient: the activity behind a task is not kept, and a day is
+        -- scanned again when the operator wants it looked at again.
+}

@@ -1,0 +1,480 @@
+-- allium: 3
+--
+-- Discovery — finding out what the operator worked on, on one day.
+--
+-- The operator picks a day on the timesheet and asks for it to be scanned.
+-- The scan looks at what the operator did that day, on both services:
+--
+--   on GitHub  -- the commits they pushed, the comments they wrote, the pull
+--                 requests they opened, the pull requests they reviewed;
+--   on Jira    -- the comments they wrote, the issues they created, the
+--                 issues they closed.
+--
+-- Every activity names the issues it belongs to -- a key in a branch name, a
+-- pull request title, a commit message, or the issue the Jira activity
+-- happened on. Each named issue becomes a task on that day, with no time on
+-- it: the scan says *what* was worked on, never *how long*.
+--
+-- Two promises hold, and they are what makes a scan safe to ask for twice:
+--
+--   * a scan only ever adds -- it never removes a task from a day, and never
+--     touches the time the operator entered, submitted or had acknowledged;
+--   * a scan is asked for, one day at a time. Nothing scans on a schedule and
+--     nothing scans a day the operator did not choose.
+
+use "../shared/access.allium" as access
+use "./work-item.allium" as items
+use "./worklog.allium" as worklog
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum ActivitySource {
+    github_commits              -- commits pushed by the operator
+    | github_comments           -- comments the operator wrote
+    | github_pull_requests      -- pull requests the operator opened
+    | github_reviews            -- pull requests the operator reviewed
+    | jira_comments             -- comments the operator wrote on issues
+    | jira_issues_created       -- issues the operator created
+    | jira_issues_closed        -- issues the operator closed
+}
+
+enum SourceOutcome { queued | scanning | succeeded | failed }
+
+enum ScanRefusal {
+    credential_unavailable      -- GitHub or Jira cannot be reached with the
+                                -- credentials in hand
+    | already_scanning          -- a scan is already running
+    | day_outside_window        -- the day is not one the timesheet shows
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value ActivityObservation {
+    -- One thing the operator did, as a source reported it.
+    source: ActivitySource
+    happened_at: Timestamp
+    reference: String           -- what it was: the pull request, the comment,
+                                -- the issue
+    title: String
+    issue_keys: Set<String>     -- the Jira issues this activity names
+}
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity ActivityAnswer {
+    -- What a service hands back for the source in flight: either a page of
+    -- activities and where the next page starts, or a failure.
+    task: ScanTask
+    activities: Set<ActivityObservation>
+    next_cursor: String?
+    failure: access/AccessFailure?
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity DayScan {
+    day: worklog/WorkDay
+    status: running | completed
+    started_at: Timestamp
+    finished_at: Timestamp?
+
+    tasks: ScanTask with scan = this
+    queued_tasks: tasks where status = queued
+    scanning_tasks: tasks where status = scanning
+    failed_tasks: tasks where status = failed
+
+    activities: DiscoveredActivity with scan = this
+    attributed_activities: activities where is_attributed
+    unattributed_activities: activities where not is_attributed
+
+    -- One source at a time, so there is at most one in flight; it is the one a
+    -- quota wait resumes.
+    current_task: sole(scanning_tasks)
+
+    is_waiting_on_quota: status = running
+        and access/github_budget.status = exhausted
+        and scanning_tasks.count > 0
+
+    is_idle: status = running
+        and scanning_tasks.count = 0
+        and queued_tasks.count > 0
+        and access/github_budget.status = available
+
+    is_drained: status = running
+        and tasks.count > 0
+        and scanning_tasks.count = 0
+        and queued_tasks.count = 0
+
+    transitions status {
+        running -> completed
+        terminal: completed
+    }
+}
+
+entity ScanTask {
+    -- One source's turn within one scan.
+    scan: DayScan
+    source: ActivitySource
+    service: access/Service
+    status: SourceOutcome
+    page_cursor: String?        -- where the next page starts; kept across a
+                                -- quota wait
+    found_count: Integer
+    failure: access/AccessFailure?
+
+    transitions status {
+        queued -> scanning
+        scanning -> succeeded
+        scanning -> failed
+        terminal: succeeded, failed
+    }
+}
+
+entity DiscoveredActivity {
+    -- One activity the scan found on the day, and what it was attributed to.
+    scan: DayScan
+    day: worklog/WorkDay
+    observation: ActivityObservation
+
+    attributed_keys: Set<String>    -- the keys that became tasks on the day
+
+    is_attributed: attributed_keys.count > 0
+    names_no_issue: observation.issue_keys.count = 0
+}
+
+------------------------------------------------------------
+-- Rules -- asking for a scan
+------------------------------------------------------------
+
+rule OperatorScansADay {
+    when: OperatorRequestsScan(day)
+    ensures: ScanRequested(day: day)
+}
+
+rule ScanStarts {
+    when: ScanRequested(day)
+    let github_access = access/Connection{service: github}
+    let jira_access = access/Connection{service: jira}
+    let active = DayScans where status = running
+    requires: github_access.is_usable
+    requires: jira_access.is_usable
+    requires: active.count = 0
+    requires: within_timesheet_window(day.starts_at, now, worklog/config.timesheet_days)
+    ensures:
+        DayScan.created(day: day, status: running, started_at: now)
+}
+
+rule ScanNotStarted {
+    when: ScanRequested(day)
+    let github_access = access/Connection{service: github}
+    let jira_access = access/Connection{service: jira}
+    let active = DayScans where status = running
+    requires:
+        not github_access.is_usable
+        or not jira_access.is_usable
+        or active.count > 0
+        or not within_timesheet_window(day.starts_at, now, worklog/config.timesheet_days)
+    ensures:
+        if not github_access.is_usable or not jira_access.is_usable:
+            ScanRefused(day: day, reason: credential_unavailable)
+        else if active.count > 0:
+            ScanRefused(day: day, reason: already_scanning)
+        else:
+            ScanRefused(day: day, reason: day_outside_window)
+
+    @guidance
+        -- Both services are scanned, so both credentials are needed: a scan
+        -- with half the picture would look like a day with half the work on
+        -- it. A scan asked for while one is running is refused; the running
+        -- one carries on.
+}
+
+rule ScanQueuesItsSources {
+    when: scan: DayScan.created
+    ensures:
+        ScanTask.created(scan: scan, source: github_commits,
+            service: github, status: queued, found_count: 0)
+        ScanTask.created(scan: scan, source: github_comments,
+            service: github, status: queued, found_count: 0)
+        ScanTask.created(scan: scan, source: github_pull_requests,
+            service: github, status: queued, found_count: 0)
+        ScanTask.created(scan: scan, source: github_reviews,
+            service: github, status: queued, found_count: 0)
+        ScanTask.created(scan: scan, source: jira_comments,
+            service: jira, status: queued, found_count: 0)
+        ScanTask.created(scan: scan, source: jira_issues_created,
+            service: jira, status: queued, found_count: 0)
+        ScanTask.created(scan: scan, source: jira_issues_closed,
+            service: jira, status: queued, found_count: 0)
+}
+
+rule NextScanSourceStarts {
+    when: scan: DayScan.is_idle
+    let next = first_queued(scan.queued_tasks)
+    requires: next.status = queued
+    requires: scan.status = running
+    ensures:
+        next.status = scanning
+        ActivityPageRequested(task: next, day: scan.day, cursor: next.page_cursor)
+
+    @guidance
+        -- One source at a time, each paginating to exhaustion before the next
+        -- starts, exactly as gitdesk collects.
+}
+
+------------------------------------------------------------
+-- Rules -- scanning a source
+------------------------------------------------------------
+
+rule ActivityPageScanned {
+    when: ActivityPageReceived(task, activities, next_cursor)
+    requires: task.status = scanning
+    ensures:
+        for activity in activities:
+            ActivityObserved(task: task, observation: activity)
+        task.found_count = task.found_count + activities.count
+        if next_cursor != null:
+            task.page_cursor = next_cursor
+            if exists access/GithubBudget{status: available}:
+                ActivityPageRequested(task: task, day: task.scan.day, cursor: next_cursor)
+        else:
+            task.page_cursor = null
+            task.status = succeeded
+}
+
+rule ScanSourceFailed {
+    when: ActivityScanFailed(task, failure)
+    requires: task.status = scanning
+    ensures:
+        task.status = failed
+        task.page_cursor = null
+        task.failure = failure
+        SourceFailedToScan(task: task, failure: failure)
+
+    @guidance
+        -- A source that failed takes nothing with it: the tasks the other
+        -- sources found are on the day, and the day says which sources did not
+        -- answer, so the operator knows the picture is partial and can scan
+        -- again.
+}
+
+rule ActivityRecorded {
+    when: ActivityObserved(task, observation)
+    requires: falls_within_day(observation.happened_at, task.scan.day.starts_at)
+    ensures:
+        let activity = DiscoveredActivity.created(
+            scan: task.scan,
+            day: task.scan.day,
+            observation: observation,
+            attributed_keys: {})
+        for key in observation.issue_keys:
+            KeyFoundInActivity(activity: activity, key: key)
+
+    @guidance
+        -- An activity that did not happen on the day being scanned is not that
+        -- day's work, whatever the source returned alongside it.
+}
+
+------------------------------------------------------------
+-- Rules -- turning activities into tasks
+------------------------------------------------------------
+
+rule KeyAlreadyKnown {
+    when: KeyFoundInActivity(activity, key)
+    let known = items/WorkItem{key: key}
+    requires: exists known
+    ensures:
+        activity.attributed_keys = activity.attributed_keys + { key }
+        worklog/TaskFoundOnDay(day: activity.day, work_item: known)
+}
+
+rule KeyNeedsLookup {
+    when: KeyFoundInActivity(activity, key)
+    let known = items/WorkItem{key: key}
+    requires: not exists known
+    ensures:
+        items/WorkItemRequested(key: key)
+
+    @guidance
+        -- The key is what the activity carries; what the task *is* comes from
+        -- Jira. Until Jira answers, the activity is on the day without being
+        -- attributed to anything.
+}
+
+rule KeyResolved {
+    when: items/WorkItemKnown(key)
+    let known = items/WorkItem{key: key}
+    for activity in DiscoveredActivities:
+        requires: key in activity.observation.issue_keys
+        requires: not key in activity.attributed_keys
+        ensures:
+            activity.attributed_keys = activity.attributed_keys + { key }
+            worklog/TaskFoundOnDay(day: activity.day, work_item: known)
+}
+
+rule KeyNeverResolved {
+    when: items/WorkItemUnavailable(key, failure)
+    for activity in DiscoveredActivities:
+        requires: key in activity.observation.issue_keys
+        requires: not key in activity.attributed_keys
+        ensures:
+            ActivityLeftUnattributed(activity: activity, key: key, failure: failure)
+
+    @guidance
+        -- A key Jira does not know puts nothing on the day. The activity is
+        -- still shown as something the operator did, so they can put the right
+        -- task on the day themselves.
+}
+
+------------------------------------------------------------
+-- Rules -- quota, completion
+------------------------------------------------------------
+
+rule ScanWaitsOnQuota {
+    when: budget: access/GithubBudget.status becomes exhausted
+    for scan in DayScans:
+        requires: scan.status = running
+        requires: scan.current_task.service = github
+        ensures:
+            ScanWaitingOnQuota(scan: scan, until: budget.resets_at)
+
+    @guidance
+        -- As with collection, quota exhaustion is a wait, not a failure:
+        -- everything found so far stays on the day, and the source in flight
+        -- keeps its cursor.
+}
+
+rule ScanResumes {
+    when: access/GithubBudgetReplenished(budget)
+    for scan in DayScans:
+        let resumed = scan.current_task
+        requires: scan.status = running
+        requires: scan.scanning_tasks.count > 0
+        ensures:
+            ActivityPageRequested(task: resumed, day: scan.day, cursor: resumed.page_cursor)
+}
+
+rule ScanCompletes {
+    when: scan: DayScan.is_drained
+    requires: scan.status = running
+    ensures:
+        scan.status = completed
+        scan.finished_at = now
+        scan.day.last_scanned_at = now
+        ScanCompleted(
+            scan: scan,
+            day: scan.day,
+            failures: scan.failed_tasks.count,
+            unattributed: scan.unattributed_activities.count)
+
+    @guidance
+        -- The day records when it was last scanned, whether or not the scan
+        -- found anything: a day scanned and empty is a different thing from a
+        -- day never scanned.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant OneScanAtATime {
+    for a in DayScans:
+        for b in DayScans:
+            a != b implies a.status != running or b.status != running
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface DayScanStatus {
+    facing operator: access/Operator
+
+    let active = DayScans where status = running
+
+    exposes:
+        operator.account_login
+        active.count
+        for scan in active:
+            scan.day.starts_at
+            scan.status
+            scan.started_at
+            scan.is_waiting_on_quota
+            scan.queued_tasks.count
+            scan.failed_tasks.count
+            for task in scan.tasks:
+                task.source
+                task.status
+                task.found_count
+                task.failure
+
+    provides:
+        OperatorRequestsScan(worklog/WorkDay)
+
+    @guarantee ScanningIsAskedFor
+        -- Nothing scans on a schedule. A day is scanned because the operator
+        -- asked for that day, and a day is never scanned behind their back.
+
+    @guarantee AScanOnlyAdds
+        -- Scanning a day again adds the tasks found since and leaves
+        -- everything already on the day exactly as it was -- the entered time,
+        -- the submitted time, and the tasks the operator put there themselves.
+}
+
+surface GithubActivityIntegration {
+    facing gateway: access/GithubGateway
+
+    exposes:
+        gateway.account_login
+        gateway.budget_remaining
+        for task in ScanTasks where status = scanning and service = github:
+            task.source
+            task.scan.day.starts_at
+            task.page_cursor
+
+    provides:
+        for answer in ActivityAnswers:
+            ActivityPageReceived(answer.task, answer.activities, answer.next_cursor)
+                when answer.failure = null
+            ActivityScanFailed(answer.task, answer.failure)
+                when answer.failure != null
+
+    @guarantee ActivityIsTheOperatorsOwn
+        -- Every GitHub source answers with what this operator did: their
+        -- commits, their comments, the pull requests they opened and the ones
+        -- they reviewed. Other people's work never lands on the timesheet.
+
+    @guarantee ActivityCarriesItsKeys
+        -- Each activity names the Jira issues it belongs to -- from the branch
+        -- name, the title, or the message it carries.
+}
+
+surface JiraActivityIntegration {
+    facing gateway: access/JiraGateway
+
+    exposes:
+        gateway.account_login
+        for task in ScanTasks where status = scanning and service = jira:
+            task.source
+            task.scan.day.starts_at
+            task.page_cursor
+
+    provides:
+        for answer in ActivityAnswers:
+            ActivityPageReceived(answer.task, answer.activities, answer.next_cursor)
+                when answer.failure = null
+            ActivityScanFailed(answer.task, answer.failure)
+                when answer.failure != null
+
+    @guarantee JiraActivityNamesItsIssue
+        -- A comment, a creation or a closure happened on an issue, so the
+        -- issue is the key: Jira activities are never unattributed.
+}

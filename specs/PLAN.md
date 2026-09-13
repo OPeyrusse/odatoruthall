@@ -9,8 +9,9 @@ Two applications live in this repository and ship as one server:
   SPA, but inverted: the **backend** holds the GitHub data in memory and the
   **configuration** is persisted in a database.
 - **worklog** — managing the operator's own work and logging time to Jira
-  through the worklog API. Its behaviour is specified in a second pass; this
-  plan reserves its slot and its seams.
+  through the worklog API: a sliding window of the last five working days, the
+  tasks worked on each of them, and the time the operator puts against each
+  task.
 
 The specification is the primary artefact. This document says *what to write,
 in what order, and where the seams are* — it is not itself a specification and
@@ -47,7 +48,10 @@ dependency order — producers before consumers.
 | `specs/gitdesk/pull-request.allium` | `PullRequest` entity and variants — author, assignees, reviews, commits, check rollup, labels, draft, mergeable, auto-merge, comment count — plus every derived classification | `config` |
 | `specs/gitdesk/collection.allium` | The refresh cycle: the fetch queue, per-source collection (repository PRs, mentions, review requests, recently merged), cursor pagination, per-source success/failure, snapshot freshness, scheduled refresh, rate-limit back-off | `access`, `config`, `pull-request` |
 | `specs/gitdesk/dashboard.allium` | Surfaces and counts: *My work* (authored / to review / assigned / addressed), *Monitoring* (stuck / aging / conflicting / difficult), *Merge train* (merging / just merged), *Team work* per tracked member, the list views with their ordering and the draft toggle | `pull-request`, `collection` |
-| `specs/worklog/*.allium` | Specified in the second pass — expected shape in §4 | `access`, `config` |
+| `specs/worklog/work-item.allium` | `WorkItem` entity (a Jira issue the operator logs against), the lookup of a key and its failures | `access` |
+| `specs/worklog/worklog.allium` | `WorkDay` and `WorklogEntry` — the day, the tasks on it, the time as typed, the entry lifecycle, submission to the Jira worklog API and its failure modes | `access`, `work-item` |
+| `specs/worklog/discovery.allium` | The day scan: the GitHub and Jira sources, the queue, attribution of an activity to an issue key, quota waits, what a scan may and may not touch | `access`, `work-item`, `worklog` |
+| `specs/worklog/timesheet.allium` | Surfaces: the five-day window with its totals, one day in detail with its loose ends, the persistence guarantee | all three |
 
 Rationale for the split: `pull-request` is pure classification and is the file
 tests will hammer hardest; `collection` is where every failure mode and
@@ -133,15 +137,45 @@ default.
 drafted / assigned), and the list views with their orderings. Drafts are
 counted but hidden unless the preference is on.
 
-## 4. worklog — the reserved slot
+## 4. worklog — the substance to capture
 
-Awaiting your second comment. Expected to need: a work item entity mirroring
-the Jira issue the operator works on, a `WorklogEntry` with a lifecycle
-(drafted → submitted → acknowledged / rejected), rules for the submission to
-the Jira worklog API and its failure modes, a day/week view with totals, and
-a surface for entering and correcting time. The seams to `shared/access`
-(Jira credential states) and `shared/config` are already in place, so the
-slice can be written without disturbing gitdesk.
+**The window.** The last five working days, Monday to Friday, in UTC — today
+included when today is a working day, otherwise the five working days that
+precede it. It is derived from the clock on every read, never stored, so it
+slides on its own. Every day in it can be filled, not only today: filling
+yesterday, or last Thursday, is the ordinary case rather than a correction.
+
+**The day.** One `WorkDay` per UTC date, holding one entry per task worked
+that day, plus the day's total. A day with nothing on it shows zero rather
+than being absent. A day also remembers when it was last scanned — a day
+scanned and empty is a different thing from a day never scanned.
+
+**The entry.** One task, one day, one duration, and the text that produced it.
+The operator types "1h 30m"; the text is kept as typed and the duration it
+means is kept beside it, so the timesheet reads back the way it was filled.
+Text that says no length of time is refused and changes nothing.
+
+**The lifecycle.** Time is drafted locally and reaches Jira only when the
+operator submits the day: `drafted → submitted → acknowledged | rejected`, and
+editing an acknowledged entry drafts it again while keeping the Jira worklog it
+already has, so a re-submission updates that worklog instead of logging the
+time twice. A rejection keeps the entered time and can be submitted again.
+Removing an entry Jira holds withdraws the worklog from Jira first.
+
+**Discovery.** The operator picks a day and asks for it to be scanned. The scan
+reads the operator's own activity on that day — on GitHub, their commits, their
+comments, the pull requests they opened and the ones they reviewed; on Jira,
+the comments they wrote, the issues they created and the issues they closed —
+one source at a time, paginating to exhaustion, with quota exhaustion a wait
+rather than a failure, exactly as gitdesk collects. Every activity names the
+Jira issues it belongs to; each named issue becomes a task on that day with no
+time on it. Activity naming no issue Jira knows is shown as a loose end rather
+than dropped, so the operator can attach the right task themselves.
+
+**Surfaces.** The five days side by side with their totals and their
+breakdowns; one day in detail with its entries, their states and the last
+scan's loose ends; the commands to name a task, enter time, remove an entry,
+submit a day and scan a day.
 
 ## 5. Method and sequence
 
@@ -155,7 +189,8 @@ Spec-first: there is no code to distil from, so each slice is built with
 3. `gitdesk/collection` — the cycle, failures, freshness, budget.
 4. `gitdesk/dashboard` — surfaces and counts.
 5. `shared/shell` — the two applications under one navigation.
-6. `worklog/*` — after the second comment.
+6. `worklog/work-item` → `worklog/worklog` → `worklog/discovery` →
+   `worklog/timesheet`, then the worklog edge added to `shared/shell`.
 7. Assembly: `allium analyse specs` over the whole set, reconcile the seams
    (unknown names, missing producers, deadlocks) with `/tend`, then `/witness`.
 
@@ -210,9 +245,39 @@ These are settled and are written as behaviour, not as open questions:
   at the next collection, which the operator triggers; presentation settings
   (thresholds, drafts) apply immediately to the snapshot in hand.
 
+These settle worklog:
+
+- **Drafted here, submitted on the operator's word.** Nothing reaches Jira
+  while the operator types; a day is submitted deliberately, and each entry
+  says whether Jira has its time yet.
+- **UTC days.** A day is a UTC calendar day, like the collection window, so
+  the whole installation has one rule about time.
+- **Five working days, today included.** Monday to Friday, sliding, derived
+  from the clock. The window bounds what can be filled, so a day that has
+  left it is settled.
+- **Scanning is asked for, one day at a time.** Nothing scans on a schedule.
+  The operator chooses the day from the timesheet and asks for it.
+- **A scan only ever adds.** It never removes a task from a day and never
+  touches entered, submitted or acknowledged time, which is what makes it
+  safe to scan the same day twice.
+- **The worklog outlives the process.** Days, tasks, entered text and what
+  Jira acknowledged survive a restart — unlike anything gitdesk collects.
+  Only the observed activity behind a discovered task is transient.
+- **Worklog parameters are spec constants, not settings.** The number of days,
+  the working days and the bounds on one entry live in the worklog slice's
+  `config` block; the operator's `Settings` surface stays gitdesk's.
+
 ## 8. Questions still open
 
 None for gitdesk: every question this plan raised is answered in §7, so the
-slices can be written without parking an `open question`. New ones will
-surface while eliciting — that is what the section is for — and worklog
-brings its own once its behaviour is described.
+slices can be written without parking an `open question`.
+
+Two the worklog slice deliberately leaves for later, because neither changes
+the shape of what is written:
+
+- **Time logged outside this installation.** Worklogs the operator records
+  from Jira itself are not read back, so a day's total is what this
+  installation knows about, not what Jira holds. Importing them would make the
+  total authoritative at the cost of reconciling two writers on the same day.
+- **A comment on a worklog.** Jira worklogs can carry a note; an entry here
+  carries only a duration. Adding one is a field and a rule, not a new shape.
