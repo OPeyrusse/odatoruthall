@@ -1,0 +1,609 @@
+-- allium: 3
+--
+-- Collection — how the installation fills its snapshot from GitHub, and what
+-- the operator sees while it does.
+--
+-- The snapshot lives in memory and belongs to the installation, not to a
+-- viewer: there is exactly one, shared by every view of it, and it does not
+-- survive a restart. The first collection starts as soon as the installation
+-- does, so the snapshot is filled without waiting for a cadence tick.
+--
+-- Four sources feed it: the open pull requests of each tracked repository, the
+-- pull requests mentioning the operator, those with a review requested from
+-- the operator, and those merged recently. They are collected one at a time,
+-- each paginating to exhaustion before the next one starts.
+--
+-- Three promises hold throughout:
+--
+--   * a failure never destroys what was collected -- each source keeps its
+--     last successful result and the time it was obtained;
+--   * quota exhaustion is a wait, not a failure -- the cycle stops asking
+--     until the budget replenishes, then resumes where it stopped;
+--   * a cycle that has started runs to completion, even if the collection
+--     window closes underneath it.
+
+use "../shared/access.allium" as access
+use "../shared/config.allium" as settings
+use "./pull-request.allium" as prs
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum SourceKind {
+    repository_pull_requests    -- the open pull requests of one tracked repository
+    | mentions                  -- pull requests mentioning the operator
+    | review_requests           -- pull requests awaiting the operator's review
+    | recently_merged           -- pull requests merged within the merged window
+}
+
+enum CycleKind {
+    startup       -- the installation has just started
+    | scheduled   -- the cadence came round inside the collection window
+    | manual      -- the operator asked
+}
+
+enum SourceOutcome { never_collected | succeeded | failed }
+
+enum RefusalReason {
+    credential_unavailable   -- no valid GitHub credential
+    | nothing_tracked        -- no repositories or no members configured
+    | already_collecting     -- a cycle is already running
+}
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity GithubAnswer {
+    -- What GitHub hands back for the source in flight: either a page of
+    -- results and where the next page starts, or a failure.
+    task: CollectionTask
+    observations: Set<PullRequestObservation>
+    next_cursor: String?
+    failure: access/AccessFailure?
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value PullRequestObservation {
+    -- One pull request as a source reported it on one page.
+    repository: settings/RepositoryReference
+    number: Integer
+    facts: prs/PullRequestFacts
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity Snapshot {
+    sources: CollectionSource with snapshot = this
+    entries: SourceEntry with snapshot = this
+
+    collected_pull_requests: entries -> pull_request
+
+    collected_sources: sources where last_outcome = succeeded
+    failed_sources: sources where last_outcome = failed
+    pending_sources: sources where last_outcome = never_collected
+
+    has_ever_collected: collected_sources.count > 0
+
+    -- How old the snapshot is: the least recent of the successes it is made
+    -- of, so a single stale source ages the whole snapshot.
+    oldest_success_at: oldest(collected_sources -> last_success_at)
+
+    -- The slices the dashboard counts. They read the snapshot as it stands,
+    -- which is the whole point: a threshold or draft preference changed
+    -- between two reads changes what they answer.
+    authored_by(login): collected_pull_requests where authored_by(login)
+    assigned_to(login): collected_pull_requests where assigned_to(login)
+    drafted_by(login): collected_pull_requests
+        where authored_by(login) and facts.is_draft
+    review_requested_from(login): collected_pull_requests
+        where review_requested_from(login)
+    addressed_for(login): collected_pull_requests where addressed_for(login)
+}
+
+entity CollectionSource {
+    snapshot: Snapshot
+    kind: SourceKind
+    repository: settings/RepositoryReference?    -- only for repository_pull_requests
+    last_outcome: SourceOutcome
+    last_success_at: Timestamp?
+    last_failure_at: Timestamp?
+    last_failure_reason: access/AccessFailure?
+
+    entries: SourceEntry with source = this
+    pull_requests: entries -> pull_request
+
+    -- A source stops being tracked when its repository leaves the
+    -- configuration. Its pull requests stay on screen until the next
+    -- collection, which is when it is dropped.
+    is_tracked: kind != repository_pull_requests
+        or repository in settings/current.tracked_repositories
+
+    data_age: now - last_success_at
+}
+
+entity SourceEntry {
+    -- One pull request, as held by one source, from one cycle. The same pull
+    -- request reached by two sources has one entry per source and is counted
+    -- once in the snapshot.
+    snapshot: Snapshot
+    source: CollectionSource
+    cycle: CollectionCycle
+    pull_request: prs/PullRequest
+}
+
+entity CollectionCycle {
+    kind: CycleKind
+    status: running | completed
+    started_at: Timestamp
+    finished_at: Timestamp?
+
+    tasks: CollectionTask with cycle = this
+    queued_tasks: tasks where status = queued
+    collecting_tasks: tasks where status = collecting
+    failed_tasks: tasks where status = failed
+
+    -- At most one source is ever in flight, so there is at most one current
+    -- task; it is the one a quota wait resumes.
+    current_task: sole(collecting_tasks)
+
+    -- Waiting on quota is not a state of its own: a running cycle whose
+    -- budget is spent is simply not asking GitHub anything until the budget
+    -- replenishes, keeping everything it has collected so far.
+    is_waiting_on_quota: status = running
+        and access/github_budget.status = exhausted
+
+    -- Nothing is in flight, there is more to do and there is budget to do it
+    -- with: the next source may start.
+    is_idle: status = running
+        and collecting_tasks.count = 0
+        and queued_tasks.count > 0
+        and access/github_budget.status = available
+
+    has_work_left: queued_tasks.count > 0 or collecting_tasks.count > 0
+
+    -- Every queued source has had its turn.
+    is_drained: status = running
+        and tasks.count > 0
+        and collecting_tasks.count = 0
+        and queued_tasks.count = 0
+
+    transitions status {
+        running -> completed
+        terminal: completed
+    }
+}
+
+entity CollectionTask {
+    -- One source's turn within one cycle.
+    cycle: CollectionCycle
+    source: CollectionSource
+    status: queued | collecting | succeeded | failed
+    page_cursor: String?        -- where the next page starts; kept across a quota wait
+    collected_count: Integer
+
+    transitions status {
+        queued -> collecting
+        collecting -> succeeded
+        collecting -> failed
+        terminal: succeeded, failed
+    }
+}
+
+entity CollectionSchedule {
+    next_run_at: Timestamp?
+}
+
+------------------------------------------------------------
+-- Defaults
+------------------------------------------------------------
+
+default Snapshot snapshot = {}
+
+default CollectionSchedule schedule = {}
+
+------------------------------------------------------------
+-- Rules — starting a cycle
+------------------------------------------------------------
+
+rule InstallationStarts {
+    when: ServerStarted()
+    let in_force = settings/Configuration{scope: installation}
+    ensures:
+        -- What GitHub gave us does not cross a restart.
+        for entry in SourceEntries:
+            not exists entry
+        for pull_request in prs/PullRequests:
+            not exists pull_request
+        for source in CollectionSources:
+            not exists source
+        for cycle in CollectionCycles:
+            not exists cycle
+        schedule.next_run_at = now + in_force.refresh_cadence
+        CollectionRequested(kind: startup)
+}
+
+rule ScheduledCollectionDue {
+    when: due: CollectionSchedule.next_run_at <= now
+    let in_force = settings/Configuration{scope: installation}
+    -- Inside the window means: on one of its active days, at an hour at or
+    -- after it opens and before it closes, read in UTC.
+    requires: within_collection_window(now, in_force.collection_window)
+    ensures:
+        due.next_run_at = now + in_force.refresh_cadence
+        CollectionRequested(kind: scheduled)
+}
+
+rule ScheduledCollectionOutsideTheWindow {
+    when: due: CollectionSchedule.next_run_at <= now
+    let in_force = settings/Configuration{scope: installation}
+    requires: not within_collection_window(now, in_force.collection_window)
+    ensures:
+        -- The next opening of the window: later today if it has not opened
+        -- yet, otherwise the first active day that follows.
+        due.next_run_at = next_window_opening(now, in_force.collection_window)
+
+    @guidance
+        -- Nothing at night, nothing at the weekend: the schedule rolls forward
+        -- to the next opening of the window without collecting. The operator's
+        -- own refresh is never suppressed this way.
+}
+
+rule CollectionStartsWhenAccessArrives {
+    when: connection: access/Connection.status becomes valid
+    let collected_so_far = CollectionCycles
+    requires: connection.service = github
+    requires: collected_so_far.count = 0
+    ensures: CollectionRequested(kind: startup)
+
+    @guidance
+        -- The installation collects as soon as it can: at startup if the
+        -- credential is already good, and otherwise the moment it becomes
+        -- good. Until the first source returns, the dashboard says it is
+        -- collecting rather than showing an empty state.
+}
+
+rule OperatorRefreshes {
+    when: OperatorRequestsRefresh()
+    ensures: CollectionRequested(kind: manual)
+}
+
+rule CollectionStarts {
+    when: CollectionRequested(kind)
+    let github_access = access/Connection{service: github}
+    let in_force = settings/Configuration{scope: installation}
+    let active = CollectionCycles where status = running
+    requires: github_access.is_usable
+    requires: in_force.is_collectable
+    requires: active.count = 0
+    ensures:
+        CollectionCycle.created(kind: kind, status: running, started_at: now)
+}
+
+rule CollectionNotStarted {
+    when: CollectionRequested(kind)
+    let github_access = access/Connection{service: github}
+    let in_force = settings/Configuration{scope: installation}
+    let active = CollectionCycles where status = running
+    requires:
+        not github_access.is_usable
+        or not in_force.is_collectable
+        or active.count > 0
+    ensures:
+        if not github_access.is_usable:
+            CollectionRefused(kind: kind, reason: credential_unavailable)
+        else if not in_force.is_collectable:
+            CollectionRefused(kind: kind, reason: nothing_tracked)
+        else:
+            CollectionRefused(kind: kind, reason: already_collecting)
+
+    @guidance
+        -- A manual refresh while a cycle is already running does not start a
+        -- second one; it is refused, and the running cycle carries on.
+}
+
+------------------------------------------------------------
+-- Rules — the queue
+------------------------------------------------------------
+
+rule CycleQueuesItsSources {
+    when: cycle: CollectionCycle.created
+    let in_force = settings/Configuration{scope: installation}
+    ensures:
+        -- A repository that left the configuration leaves the snapshot here,
+        -- with everything it had collected.
+        for stale in snapshot.sources where not is_tracked:
+            for entry in stale.entries:
+                not exists entry
+            not exists stale
+        for repository in in_force.tracked_repositories:
+            SourceQueued(cycle: cycle, kind: repository_pull_requests, repository: repository)
+        SourceQueued(cycle: cycle, kind: mentions, repository: null)
+        SourceQueued(cycle: cycle, kind: review_requests, repository: null)
+        SourceQueued(cycle: cycle, kind: recently_merged, repository: null)
+}
+
+rule SourceTakesItsPlaceInTheQueue {
+    when: SourceQueued(cycle, kind, repository)
+    let known = CollectionSource{snapshot: snapshot, kind: kind, repository: repository}
+    ensures:
+        if exists known:
+            CollectionTask.created(
+                cycle: cycle,
+                source: known,
+                status: queued,
+                collected_count: 0)
+        else:
+            let fresh = CollectionSource.created(
+                snapshot: snapshot,
+                kind: kind,
+                repository: repository,
+                last_outcome: never_collected)
+            CollectionTask.created(
+                cycle: cycle,
+                source: fresh,
+                status: queued,
+                collected_count: 0)
+}
+
+rule NextSourceStarts {
+    when: cycle: CollectionCycle.is_idle
+    -- The sources take their turn in the order they were queued.
+    let next = first_queued(cycle.queued_tasks)
+    requires: next.status = queued
+    requires: cycle.status = running
+    ensures:
+        next.status = collecting
+        SourcePageRequested(task: next, cursor: next.page_cursor)
+
+    @guidance
+        -- One source at a time. The next one starts only once the previous has
+        -- paginated to exhaustion, succeeded or failed.
+}
+
+------------------------------------------------------------
+-- Rules — collecting a source
+------------------------------------------------------------
+
+rule SourcePageCollected {
+    when: SourcePageReceived(task, observations, next_cursor)
+    requires: task.status = collecting
+    ensures:
+        for observation in observations:
+            PullRequestObserved(task: task, observation: observation)
+        task.collected_count = task.collected_count + observations.count
+        if next_cursor != null:
+            task.page_cursor = next_cursor
+            if exists access/GithubBudget{status: available}:
+                SourcePageRequested(task: task, cursor: next_cursor)
+        else:
+            task.page_cursor = null
+            task.status = succeeded
+}
+
+rule SourceCollected {
+    when: task: CollectionTask.status transitions_to succeeded
+    ensures:
+        -- The source's previous result is replaced, all at once, by what this
+        -- cycle collected. Until this moment the old result was still on
+        -- screen.
+        for stale in task.source.entries where cycle != task.cycle:
+            not exists stale
+        task.source.last_outcome = succeeded
+        task.source.last_success_at = now
+        task.source.last_failure_reason = null
+        SourceRefreshed(source: task.source)
+}
+
+rule SourceFailed {
+    when: SourceCollectionFailed(task, failure)
+    requires: task.status = collecting
+    ensures:
+        task.status = failed
+        task.page_cursor = null
+        task.source.last_outcome = failed
+        task.source.last_failure_at = now
+        task.source.last_failure_reason = failure
+        SourceFailedToRefresh(source: task.source, failure: failure)
+
+    @guidance
+        -- Nothing collected is discarded here: the source keeps the entries of
+        -- its last successful collection, and the dashboard goes on showing
+        -- them alongside the failure and the age of the data.
+}
+
+rule PullRequestEntersTheSnapshot {
+    when: PullRequestObserved(task, observation)
+    let github_access = access/Connection{service: github}
+    let in_force = settings/Configuration{scope: installation}
+    let known = prs/PullRequest{
+        repository: observation.repository,
+        number: observation.number}
+    let of_interest =
+        observation.facts.author in in_force.tracked_members
+        or observation.facts.author = github_access.account_login
+        or observation.facts.assignees.any(a => a in in_force.tracked_members)
+        or github_access.account_login in observation.facts.assignees
+    requires: of_interest
+    requires: not exists known
+    ensures:
+        let pull_request = prs/PullRequest.created(
+            repository: observation.repository,
+            number: observation.number,
+            facts: observation.facts,
+            first_seen_at: now,
+            last_seen_at: now)
+        SourceEntry.created(
+            snapshot: snapshot,
+            source: task.source,
+            cycle: task.cycle,
+            pull_request: pull_request)
+}
+
+rule PullRequestRefreshed {
+    when: PullRequestObserved(task, observation)
+    let github_access = access/Connection{service: github}
+    let in_force = settings/Configuration{scope: installation}
+    let known = prs/PullRequest{
+        repository: observation.repository,
+        number: observation.number}
+    let of_interest =
+        observation.facts.author in in_force.tracked_members
+        or observation.facts.author = github_access.account_login
+        or observation.facts.assignees.any(a => a in in_force.tracked_members)
+        or github_access.account_login in observation.facts.assignees
+    requires: of_interest
+    requires: exists known
+    ensures:
+        known.facts = observation.facts
+        known.last_seen_at = now
+        if not exists SourceEntry{source: task.source, cycle: task.cycle, pull_request: known}:
+            SourceEntry.created(
+                snapshot: snapshot,
+                source: task.source,
+                cycle: task.cycle,
+                pull_request: known)
+
+    @guidance
+        -- A pull request neither the operator nor a tracked member authored or
+        -- was assigned is not of interest: it is not recorded, and one that
+        -- stops being of interest leaves the snapshot with the previous
+        -- cycle's entries.
+}
+
+------------------------------------------------------------
+-- Rules — quota, completion
+------------------------------------------------------------
+
+rule CollectionWaitsOnQuota {
+    when: budget: access/GithubBudget.status becomes exhausted
+    for cycle in CollectionCycles:
+        requires: cycle.status = running
+        requires: cycle.has_work_left
+        ensures:
+            CollectionWaitingOnQuota(cycle: cycle, until: budget.resets_at)
+
+    @guidance
+        -- Everything collected so far is kept, and the source in flight keeps
+        -- its cursor. This is a wait, not a failure: the dashboard says the
+        -- collection is waiting on quota rather than reporting an error.
+}
+
+rule CollectionResumes {
+    when: access/GithubBudgetReplenished(budget)
+    for cycle in CollectionCycles:
+        let resumed = cycle.current_task
+        requires: cycle.status = running
+        requires: cycle.collecting_tasks.count > 0
+        ensures:
+            SourcePageRequested(task: resumed, cursor: resumed.page_cursor)
+
+    @guidance
+        -- The source in flight picks up at the cursor it stopped on; the
+        -- sources already collected in this cycle are not collected again.
+}
+
+rule CycleCompletes {
+    when: cycle: CollectionCycle.is_drained
+    requires: cycle.status = running
+    ensures:
+        cycle.status = completed
+        cycle.finished_at = now
+        CollectionCompleted(cycle: cycle, failures: cycle.failed_tasks.count)
+
+    @guidance
+        -- A cycle that has started runs to completion. The collection window
+        -- governs when a cycle may start, never when it must stop.
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface CollectionStatus {
+    facing operator: access/Operator
+
+    let active = CollectionCycles where status = running
+
+    exposes:
+        operator.account_login
+        snapshot.has_ever_collected
+        snapshot.oldest_success_at
+        snapshot.failed_sources.count
+        active.count
+        for cycle in active:
+            cycle.kind
+            cycle.status
+            cycle.is_waiting_on_quota
+            cycle.started_at
+            cycle.queued_tasks.count
+            cycle.failed_tasks.count
+        for source in snapshot.sources:
+            source.kind
+            source.repository
+            source.last_outcome
+            source.last_success_at
+            source.last_failure_at
+            source.last_failure_reason
+            source.data_age
+
+    provides:
+        OperatorRequestsRefresh()
+
+    @guarantee CollectingRatherThanEmpty
+        -- Until the first source returns, the dashboard says it is collecting.
+        -- An empty snapshot that has never been collected is not an empty
+        -- dashboard.
+
+    @guarantee LastKnownGoodIsAlwaysOnScreen
+        -- Whatever failed, the dashboard shows the last successful result of
+        -- every source, how old it is, and which sources failed to refresh.
+
+    @guarantee RefreshIsAlwaysAvailable
+        -- The operator can ask for a collection at any time, inside the
+        -- collection window or out of it.
+}
+
+surface GithubCollectionIntegration {
+    facing gateway: access/GithubGateway
+
+    exposes:
+        gateway.account_login
+        gateway.budget_remaining
+        for task in CollectionTasks where status = collecting:
+            task.source.kind
+            task.source.repository
+            task.page_cursor
+
+    provides:
+        for answer in GithubAnswers:
+            SourcePageReceived(answer.task, answer.observations, answer.next_cursor)
+                when answer.failure = null
+            SourceCollectionFailed(answer.task, answer.failure)
+                when answer.failure != null
+
+    @guarantee OneSourceInFlight
+        -- At most one source is being collected at any moment, and it
+        -- paginates to exhaustion before the next one starts.
+}
+
+surface InstallationLifecycle {
+    facing runtime: access/Runtime
+
+    exposes:
+        runtime.started_at
+        snapshot.has_ever_collected
+
+    provides:
+        ServerStarted()
+
+    @guarantee TheSnapshotDiesWithTheProcess
+        -- Nothing collected survives a restart. The configuration does; the
+        -- snapshot is rebuilt by the collection that starts with the process.
+}

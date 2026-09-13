@@ -1,0 +1,271 @@
+-- allium: 3
+--
+-- Configuration — what the operator tells the installation to watch, how often
+-- to look, and where the lines between "fine" and "worth noticing" fall.
+--
+-- There is one configuration for the whole installation, and it outlives the
+-- process: what the operator last saved is what is in force after a restart.
+-- Everything the installation collected, by contrast, is lost on restart and
+-- rebuilt by the first collection.
+--
+-- The configuration divides in two by *when it takes effect*:
+--
+--   collection settings    -- tracked repositories, tracked members, cadence,
+--                             collection window. They shape the next
+--                             collection and nothing else.
+--   presentation settings  -- classification thresholds, the draft preference.
+--                             They apply to the snapshot already in hand, so
+--                             changing one reclassifies what is on screen
+--                             without fetching anything.
+--
+-- Saving the configuration never starts a collection.
+
+use "./access.allium" as access
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value RepositoryReference {
+    owner: String
+    name: String
+}
+
+value CollectionWindow {
+    -- The hours of the day, in UTC, between which a scheduled collection may
+    -- start, and the days it may start on. UTC throughout, so the behaviour
+    -- does not depend on where the installation runs.
+    opens_hour: Integer
+    closes_hour: Integer
+    active_days: Set<DayOfWeek>
+}
+
+value ClassificationThresholds {
+    aging: Duration             -- open longer than this, and it is aging
+    comments: Integer           -- at least this many comments, and it is conflicting
+    commits: Integer            -- at least this many commits, and (if approved) difficult
+    failing_commits: Integer    -- this many newest commits failing, and (if approved) stuck
+    merged_window: Duration     -- merged within this, and it is still worth
+                                -- showing; it also bounds what the recently
+                                -- merged source asks GitHub for
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum Scope { installation }
+
+enum DayOfWeek { monday | tuesday | wednesday | thursday | friday | saturday | sunday }
+
+enum ConfigurationFault {
+    no_repositories
+    | no_members
+    | cadence_out_of_bounds
+    | window_inverted
+    | no_active_days
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity Configuration {
+    scope: Scope
+
+    -- Collection settings
+    tracked_repositories: Set<RepositoryReference>
+    tracked_members: Set<String>            -- GitHub logins, one general list,
+                                            -- not scoped per repository
+    refresh_cadence: Duration
+    collection_window: CollectionWindow
+
+    -- Presentation settings
+    thresholds: ClassificationThresholds
+    show_drafts: Boolean
+
+    updated_at: Timestamp?
+
+    is_collectable: tracked_repositories.count > 0 and tracked_members.count > 0
+
+    invariant CadenceWithinBounds {
+        refresh_cadence >= config.min_refresh_cadence
+            and refresh_cadence <= config.max_refresh_cadence
+    }
+
+    invariant WindowBoundsTheDay {
+        collection_window.opens_hour >= 0
+            and collection_window.closes_hour <= 24
+            and collection_window.opens_hour < collection_window.closes_hour
+    }
+
+    invariant SomethingToCollectOn {
+        collection_window.active_days.count > 0
+    }
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    -- The values a fresh installation starts with, and the bounds a saved
+    -- configuration is held to. The defaults are those of the dashboard this
+    -- application is modelled on.
+    default_refresh_cadence: Duration = 60.minutes
+    min_refresh_cadence: Duration = 5.minutes
+    max_refresh_cadence: Duration = 24.hours
+
+    default_window_opens_hour: Integer = 5
+    default_window_closes_hour: Integer = 21
+
+    default_aging_threshold: Duration = 15.days
+    default_comment_threshold: Integer = 15
+    default_commit_threshold: Integer = 10
+    default_failing_commit_window: Integer = 10
+    default_merged_window: Duration = 3.days
+}
+
+------------------------------------------------------------
+-- Defaults
+------------------------------------------------------------
+
+default Configuration current = {
+    scope: installation,
+    tracked_repositories: {},
+    tracked_members: {},
+    refresh_cadence: config.default_refresh_cadence,
+    collection_window: {
+        opens_hour: config.default_window_opens_hour,
+        closes_hour: config.default_window_closes_hour,
+        active_days: { monday, tuesday, wednesday, thursday, friday }
+    },
+    thresholds: {
+        aging: config.default_aging_threshold,
+        comments: config.default_comment_threshold,
+        commits: config.default_commit_threshold,
+        failing_commits: config.default_failing_commit_window,
+        merged_window: config.default_merged_window
+    },
+    show_drafts: false
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule ConfigurationSaved {
+    when: OperatorSavesConfiguration(repositories, members, cadence, window, thresholds, drafts)
+
+    let collection_settings_changed =
+        repositories != current.tracked_repositories
+        or members != current.tracked_members
+        or cadence != current.refresh_cadence
+        or window != current.collection_window
+    let presentation_settings_changed =
+        thresholds != current.thresholds
+        or drafts != current.show_drafts
+
+    requires: repositories.count > 0
+    requires: members.count > 0
+    requires: cadence >= config.min_refresh_cadence
+    requires: cadence <= config.max_refresh_cadence
+    requires: window.opens_hour < window.closes_hour
+    requires: window.active_days.count > 0
+
+    ensures:
+        current.tracked_repositories = repositories
+        current.tracked_members = members
+        current.refresh_cadence = cadence
+        current.collection_window = window
+        current.thresholds = thresholds
+        current.show_drafts = drafts
+        current.updated_at = now
+        if collection_settings_changed:
+            CollectionSettingsChanged(configuration: current)
+        if presentation_settings_changed:
+            PresentationSettingsChanged(configuration: current)
+
+    @guidance
+        -- Neither emission starts a collection. CollectionSettingsChanged says
+        -- what the next collection will do differently; the operator decides
+        -- when that collection happens.
+}
+
+rule ConfigurationRefused {
+    when: OperatorSavesConfiguration(repositories, members, cadence, window, thresholds, drafts)
+
+    requires:
+        repositories.count = 0
+        or members.count = 0
+        or cadence < config.min_refresh_cadence
+        or cadence > config.max_refresh_cadence
+        or window.opens_hour >= window.closes_hour
+        or window.active_days.count = 0
+
+    ensures:
+        if repositories.count = 0:
+            ConfigurationRejected(fault: no_repositories)
+        else if members.count = 0:
+            ConfigurationRejected(fault: no_members)
+        else if window.opens_hour >= window.closes_hour:
+            ConfigurationRejected(fault: window_inverted)
+        else if window.active_days.count = 0:
+            ConfigurationRejected(fault: no_active_days)
+        else:
+            ConfigurationRejected(fault: cadence_out_of_bounds)
+
+    @guidance
+        -- A rejected save changes nothing: the configuration in force is the
+        -- one that was already in force.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant OneConfigurationPerInstallation {
+    for a in Configurations:
+        for b in Configurations:
+            a != b implies a.scope != b.scope
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface Settings {
+    facing operator: access/Operator
+
+    exposes:
+        operator.account_login
+        current.tracked_repositories
+        current.tracked_members
+        current.refresh_cadence
+        current.collection_window
+        current.thresholds
+        current.show_drafts
+        current.updated_at
+
+    provides:
+        OperatorSavesConfiguration(
+            current.tracked_repositories,
+            current.tracked_members,
+            current.refresh_cadence,
+            current.collection_window,
+            current.thresholds,
+            current.show_drafts)
+
+    @guarantee ConfigurationOutlivesTheProcess
+        -- The configuration in force after a restart is the one last saved.
+        -- It is the only thing the installation keeps across a restart.
+
+    @guarantee SavingNeverCollects
+        -- Saving starts no collection. A repository removed from the list
+        -- keeps its pull requests on screen until the next collection; a
+        -- threshold changed reclassifies the snapshot in hand immediately.
+
+    @guarantee AllTimesAreUTC
+        -- The collection window is expressed and evaluated in UTC, so the same
+        -- configuration behaves identically wherever the installation runs.
+}

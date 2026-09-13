@@ -1,0 +1,159 @@
+-- allium: 3
+--
+-- Pull requests — what gitdesk knows about a pull request, and every judgement
+-- it makes about one.
+--
+-- A pull request in the snapshot is an identity (which repository, which
+-- number) and a set of *facts*: what GitHub last said about it. The facts are
+-- replaced wholesale by each collection; nothing here decides when that
+-- happens, only what the facts mean.
+--
+-- Every classification below reads the thresholds in force at the moment it is
+-- read, which is what makes a threshold change reclassify the snapshot already
+-- on screen without fetching anything.
+
+use "../shared/config.allium" as settings
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum CheckRollup {
+    success         -- every check on the commit passed
+    | failure       -- at least one check failed
+    | pending       -- checks are still running
+    | none          -- the commit has no checks
+}
+
+enum ReviewVerdict { approved | changes_requested | commented | dismissed }
+
+enum PullRequestState { open | merged }
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value CommitFacts {
+    sha: String
+    committed_at: Timestamp
+    check_rollup: CheckRollup
+}
+
+value ReviewFacts {
+    reviewer: String
+    verdict: ReviewVerdict
+    submitted_at: Timestamp
+    reviewed_sha: String        -- the commit the reviewer looked at
+}
+
+value PullRequestFacts {
+    title: String
+    url: String
+    author: String
+    assignees: Set<String>
+    requested_reviewers: Set<String>
+    labels: Set<String>
+    is_draft: Boolean
+    state: PullRequestState
+    mergeable: Boolean
+    auto_merge_enabled: Boolean
+    comment_count: Integer
+    opened_at: Timestamp
+    updated_at: Timestamp
+    merged_at: Timestamp?
+    commits: List<CommitFacts>      -- newest first
+    reviews: List<ReviewFacts>      -- oldest first
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity PullRequest {
+    repository: settings/RepositoryReference
+    number: Integer
+    facts: PullRequestFacts
+    first_seen_at: Timestamp
+    last_seen_at: Timestamp
+
+    -- Who is on it
+    participants: facts.assignees + { facts.author }
+
+    -- Checks. "Green" is the check rollup of the newest commit; a pull request
+    -- with no commits has no rollup to report.
+    head_commit: facts.commits.first
+    head_check: head_commit.check_rollup
+
+    -- Reviews. Only the last review of each reviewer counts, and only if it
+    -- approved or requested changes: a comment is not a verdict.
+    decisive_reviews: latest_review_per_reviewer(facts.reviews)
+        where verdict in {approved, changes_requested}
+    approvals: decisive_reviews where verdict = approved
+    change_requests: decisive_reviews where verdict = changes_requested
+    is_approved: decisive_reviews.count > 0 and change_requests.count = 0
+
+    -- Reviewers who asked for changes and have had them answered since: the
+    -- author has pushed commits the reviewer has not looked at yet, so the
+    -- pull request is back in the reviewer's court.
+    awaiting_rereview: reviewers_with_answered_change_requests(facts.reviews, facts.commits)
+
+    is_open: facts.state = open
+    age: now - facts.opened_at
+
+    ------------------------------------------------------------
+    -- Classifications
+    ------------------------------------------------------------
+
+    is_aging: is_open and age >= settings/current.thresholds.aging
+
+    is_conflicting: is_open
+        and facts.comment_count >= settings/current.thresholds.comments
+
+    is_difficult: is_open
+        and facts.commits.count >= settings/current.thresholds.commits
+        and is_approved
+
+    is_stuck: is_open
+        and is_approved
+        and facts.commits.count >= settings/current.thresholds.failing_commits
+        and newest_commits(facts.commits, settings/current.thresholds.failing_commits)
+            .all(c => c.check_rollup = failure)
+
+    is_merging: is_open
+        and not facts.is_draft
+        and facts.mergeable
+        and facts.auto_merge_enabled
+        and is_approved
+
+    is_recently_merged: facts.state = merged
+        and facts.merged_at != null
+        and now - facts.merged_at <= settings/current.thresholds.merged_window
+
+    -- Whether this pull request is shown at all: drafts are always counted,
+    -- and only listed when the operator asks for them.
+    is_listable: not facts.is_draft or settings/current.show_drafts
+
+    ------------------------------------------------------------
+    -- Slices by person
+    ------------------------------------------------------------
+
+    authored_by(login): facts.author = login
+    assigned_to(login): login in facts.assignees
+    review_requested_from(login): login in facts.requested_reviewers
+    addressed_for(login): login in awaiting_rereview
+    involves(login): login in participants
+
+    invariant MergedPullRequestsHaveAMergeTime {
+        facts.state = merged implies facts.merged_at != null
+    }
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant OnePullRequestPerRepositoryAndNumber {
+    for a in PullRequests:
+        for b in PullRequests:
+            a != b implies a.repository != b.repository or a.number != b.number
+}
