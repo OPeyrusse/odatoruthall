@@ -1,0 +1,485 @@
+-- allium: 3
+--
+-- The worklog — the operator's days, the tasks they worked on, the time they
+-- put against each, and what it means for that time to have reached Jira.
+--
+-- A day is a UTC calendar day, like everything else in this installation, and
+-- it holds one entry per task worked that day. An entry carries the time
+-- exactly as the operator typed it -- "1h 30m" -- and the duration that text
+-- means. Text that means nothing is refused and changes nothing.
+--
+-- One entry per task per day, whatever the day turned up under it: two pull
+-- requests, a review and four comments on the same ticket are one entry with
+-- one duration. What produced it is discovered activity, and it carries no
+-- time of its own.
+--
+-- Time is drafted here and submitted to Jira on the operator's word: nothing
+-- is written to Jira as a side effect of typing. An entry is therefore always
+-- in one of four states, and the operator can always tell which:
+--
+--   drafted       -- time is entered here, and Jira does not have it
+--   submitted     -- it is on its way to Jira
+--   acknowledged  -- Jira holds it, under a worklog of its own
+--   rejected      -- Jira refused it; the time entered is still here
+--
+-- Editing an acknowledged entry drafts it again, keeping the Jira worklog it
+-- already has: the next submission updates that worklog rather than adding a
+-- second one.
+--
+-- Unlike everything gitdesk collects, the worklog outlives the process. It is
+-- the operator's own work, not a copy of someone else's data.
+
+use "../shared/access.allium" as access
+use "./work-item.allium" as items
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum EntryOrigin {
+    discovered              -- a day scan found the task on that day
+    | added_by_operator     -- the operator named the task themselves
+}
+
+enum EntryStatus { drafted | submitted | acknowledged | rejected }
+
+enum EntryFault {
+    unreadable_duration     -- the text does not say a length of time
+    | duration_out_of_bounds -- it does, but not one a day can hold
+    | day_outside_window    -- the day is not one of the days on the timesheet
+    | entry_in_flight       -- the entry is on its way to Jira
+    | task_already_on_day   -- that task already has an entry on that day
+}
+
+enum SubmissionFailure {
+    credential_unavailable  -- no valid Jira credential
+    | jira_unreachable      -- Jira did not answer
+    | worklog_refused       -- Jira answered, and refused the worklog
+}
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity WorklogAnswer {
+    -- What Jira hands back about one write or one withdrawal.
+    entry: WorklogEntry
+    worklog_id: String?
+    deleted: Boolean
+    failure: SubmissionFailure?
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity WorkDay {
+    -- One UTC day of work. Days exist because something was put on them: a
+    -- scan, an entry, or a submission. A day nobody has touched still shows on
+    -- the timesheet, with nothing on it.
+    starts_at: Timestamp            -- the UTC midnight the day opens on
+    last_scanned_at: Timestamp?
+
+    entries: WorklogEntry with day = this
+    filled_entries: entries where is_filled
+
+    -- What the operator is looking for first: how much of the day is
+    -- accounted for.
+    total_logged: total_duration(filled_entries -> duration)
+
+    drafted_entries: entries where status = drafted and is_filled
+    submitted_entries: entries where status = submitted
+    acknowledged_entries: entries where status = acknowledged
+    rejected_entries: entries where status = rejected
+
+    has_time_to_submit: drafted_entries.count > 0 or rejected_entries.count > 0
+    is_in_flight: submitted_entries.count > 0
+    is_settled: filled_entries.count > 0
+        and acknowledged_entries.count = filled_entries.count
+
+    has_been_scanned: last_scanned_at != null
+
+    invariant DaysStartAtMidnight {
+        starts_at = utc_midnight_of(starts_at)
+    }
+}
+
+entity WorklogEntry {
+    -- One task, on one day, with the time the operator put against it.
+    day: WorkDay
+    work_item: items/WorkItem
+    origin: EntryOrigin
+    status: EntryStatus
+
+    entered_text: String?           -- exactly what the operator typed
+    duration: Duration?             -- what that text means
+    jira_worklog_id: String?        -- the worklog Jira holds for this entry
+    submitted_at: Timestamp?
+    acknowledged_at: Timestamp?
+    last_failure: SubmissionFailure?
+
+    is_filled: duration != null and duration > 0.minutes
+    is_in_flight: status = submitted
+    is_editable: status != submitted
+    is_known_to_jira: jira_worklog_id != null
+
+    -- Time that is entered here and not in Jira: either never submitted, or
+    -- edited since Jira acknowledged it.
+    is_pending_submission: is_filled and status in {drafted, rejected}
+
+    transitions status {
+        drafted -> submitted
+        submitted -> acknowledged
+        submitted -> rejected
+        acknowledged -> drafted
+        rejected -> drafted
+        rejected -> submitted
+    }
+
+    invariant AcknowledgedTimeIsKnownToJira {
+        status = acknowledged implies jira_worklog_id != null
+    }
+}
+
+entity HeldTaskName {
+    -- A key the operator typed for a day, waiting on Jira to say what it is.
+    -- It is how naming a task the installation has never heard of still puts
+    -- that task on the day, once Jira answers.
+    day: WorkDay
+    key: String
+    named_at: Timestamp
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    -- The timesheet shows this many working days, ending with today when
+    -- today is one of them. Monday to Friday, in UTC.
+    timesheet_days: Integer = 5
+
+    -- What a single entry may say. A day is not capped: the operator is
+    -- trusted to know their own day, and the total is shown so they can see
+    -- it.
+    min_entry_duration: Duration = 1.minutes
+    max_entry_duration: Duration = 24.hours
+}
+
+------------------------------------------------------------
+-- Rules -- putting a task on a day
+------------------------------------------------------------
+
+rule TaskNamed {
+    when: OperatorNamesTask(day, key)
+    let known = items/WorkItem{key: key}
+    requires: within_timesheet_window(day.starts_at, now, config.timesheet_days)
+    requires: exists known
+    ensures:
+        OperatorAddsTask(day: day, work_item: known)
+}
+
+rule TaskNamedButUnknown {
+    when: OperatorNamesTask(day, key)
+    let known = items/WorkItem{key: key}
+    let held = HeldTaskName{day: day, key: key}
+    requires: within_timesheet_window(day.starts_at, now, config.timesheet_days)
+    requires: not exists known
+    requires: not exists held
+    ensures:
+        HeldTaskName.created(day: day, key: key, named_at: now)
+        items/WorkItemRequested(key: key)
+
+    @guidance
+        -- The operator names a task by its key; what the task *is* comes from
+        -- Jira. Nothing is on the day until Jira has answered.
+}
+
+rule HeldTaskArrives {
+    when: items/WorkItemKnown(key)
+    let known = items/WorkItem{key: key}
+    for held in HeldTaskNames:
+        requires: held.key = key
+        ensures:
+            OperatorAddsTask(day: held.day, work_item: known)
+            not exists held
+}
+
+rule HeldTaskNeverArrives {
+    when: items/WorkItemUnavailable(key, failure)
+    for held in HeldTaskNames:
+        requires: held.key = key
+        ensures:
+            EntryRefused(day: held.day, fault: unknown_task)
+            not exists held
+}
+
+rule TaskAddedToDay {
+    when: OperatorAddsTask(day, work_item)
+    let already = WorklogEntry{day: day, work_item: work_item}
+    requires: within_timesheet_window(day.starts_at, now, config.timesheet_days)
+    requires: not exists already
+    ensures:
+        WorklogEntry.created(
+            day: day,
+            work_item: work_item,
+            origin: added_by_operator,
+            status: drafted)
+        TaskPutOnDay(day: day, work_item: work_item, origin: added_by_operator)
+}
+
+rule TaskNotAddedToDay {
+    when: OperatorAddsTask(day, work_item)
+    let already = WorklogEntry{day: day, work_item: work_item}
+    requires:
+        not within_timesheet_window(day.starts_at, now, config.timesheet_days)
+        or exists already
+    ensures:
+        if exists already:
+            EntryRefused(day: day, fault: task_already_on_day)
+        else:
+            EntryRefused(day: day, fault: day_outside_window)
+
+    @guidance
+        -- One entry per task per day: asking for a task the day already has
+        -- changes nothing, and the time already on that entry is untouched.
+}
+
+rule TaskDiscoveredOnDay {
+    when: TaskFoundOnDay(day, work_item)
+    let already = WorklogEntry{day: day, work_item: work_item}
+    requires: not exists already
+    ensures:
+        WorklogEntry.created(
+            day: day,
+            work_item: work_item,
+            origin: discovered,
+            status: drafted)
+        TaskPutOnDay(day: day, work_item: work_item, origin: discovered)
+
+    @guidance
+        -- A scan adds tasks and takes none away. A task the day already
+        -- carries keeps its entry, its origin and its time: a scan never
+        -- overwrites what the operator typed, and never removes a task they
+        -- put there themselves.
+}
+
+rule TimesheetDaysExist {
+    when: OperatorOpensTimesheet()
+    ensures:
+        for starts_at in working_days_ending_at(now, config.timesheet_days):
+            if not exists WorkDay{starts_at: starts_at}:
+                WorkDay.created(starts_at: starts_at)
+
+    @guidance
+        -- The five working days the timesheet shows always exist, whether or
+        -- not anything has been put on them: a day with nothing logged is a
+        -- day showing zero, never a day missing from the week. The window
+        -- slides on its own -- it is read from the clock, not stored.
+}
+
+------------------------------------------------------------
+-- Rules -- entering time
+------------------------------------------------------------
+
+rule TimeEntered {
+    when: OperatorEntersTime(entry, text)
+    let entered = duration_of(text)
+    requires: entry.is_editable
+    requires: within_timesheet_window(entry.day.starts_at, now, config.timesheet_days)
+    requires: is_readable_duration(text)
+    requires: entered >= config.min_entry_duration
+    requires: entered <= config.max_entry_duration
+    ensures:
+        entry.entered_text = text
+        entry.duration = entered
+        entry.status = drafted
+        entry.last_failure = null
+        TimeDrafted(entry: entry, duration: entered)
+
+    @guidance
+        -- The text the operator typed is kept as they typed it, alongside the
+        -- duration it means, so the timesheet reads back the way it was
+        -- filled. An acknowledged entry edited here is drafted again and keeps
+        -- the Jira worklog it already has.
+}
+
+rule TimeRefused {
+    when: OperatorEntersTime(entry, text)
+    let entered = duration_of(text)
+    requires:
+        not entry.is_editable
+        or not within_timesheet_window(entry.day.starts_at, now, config.timesheet_days)
+        or not is_readable_duration(text)
+        or entered < config.min_entry_duration
+        or entered > config.max_entry_duration
+    ensures:
+        if not entry.is_editable:
+            TimeEntryRejected(entry: entry, fault: entry_in_flight)
+        else if not within_timesheet_window(entry.day.starts_at, now, config.timesheet_days):
+            TimeEntryRejected(entry: entry, fault: day_outside_window)
+        else if not is_readable_duration(text):
+            TimeEntryRejected(entry: entry, fault: unreadable_duration)
+        else:
+            TimeEntryRejected(entry: entry, fault: duration_out_of_bounds)
+
+    @guidance
+        -- A refused entry changes nothing: the time in force is the time that
+        -- was already there, and what reached Jira stays as it was.
+}
+
+rule EntryRemoved {
+    when: OperatorRemovesEntry(entry)
+    requires: entry.is_editable
+    ensures:
+        if entry.is_known_to_jira:
+            WorklogDeletionRequested(entry: entry, worklog: entry.jira_worklog_id)
+        else:
+            not exists entry
+
+    @guidance
+        -- Time Jira already holds is not forgotten by dropping the row that
+        -- carries it: the worklog is withdrawn from Jira first, and the entry
+        -- goes when Jira says it is gone.
+}
+
+rule EntryWithdrawn {
+    when: WorklogDeleted(entry)
+    ensures:
+        not exists entry
+}
+
+rule EntryWithdrawalRefused {
+    when: WorklogDeletionRefused(entry, failure)
+    ensures:
+        entry.last_failure = failure
+        WorklogStillInJira(entry: entry, failure: failure)
+}
+
+------------------------------------------------------------
+-- Rules -- submitting a day to Jira
+------------------------------------------------------------
+
+rule DaySubmitted {
+    when: OperatorSubmitsDay(day)
+    let jira_access = access/Connection{service: jira}
+    requires: jira_access.is_usable
+    requires: day.has_time_to_submit
+    ensures:
+        for entry in day.entries where is_pending_submission:
+            EntrySubmissionRequested(entry: entry)
+
+    @guidance
+        -- Only what Jira does not already hold is sent: entries acknowledged
+        -- and untouched since are left alone, and an entry with no time on it
+        -- is not a worklog.
+}
+
+rule DayNotSubmitted {
+    when: OperatorSubmitsDay(day)
+    let jira_access = access/Connection{service: jira}
+    requires: not jira_access.is_usable or not day.has_time_to_submit
+    ensures:
+        if not jira_access.is_usable:
+            DaySubmissionRefused(day: day, failure: credential_unavailable)
+        else:
+            NothingToSubmit(day: day)
+}
+
+rule EntrySubmitted {
+    when: EntrySubmissionRequested(entry)
+    requires: entry.is_pending_submission
+    ensures:
+        entry.status = submitted
+        entry.submitted_at = now
+        entry.last_failure = null
+        WorklogWriteRequested(
+            entry: entry,
+            issue: entry.work_item.key,
+            worklog: entry.jira_worklog_id,
+            started_at: entry.day.starts_at,
+            duration: entry.duration)
+
+    @guidance
+        -- An entry Jira already holds is updated under the same worklog, never
+        -- added a second time: a day submitted twice logs the time once.
+}
+
+rule SubmissionAcknowledged {
+    when: WorklogWritten(entry, worklog_id)
+    requires: entry.status = submitted
+    ensures:
+        entry.status = acknowledged
+        entry.jira_worklog_id = worklog_id
+        entry.acknowledged_at = now
+        entry.last_failure = null
+        TimeReachedJira(entry: entry, worklog: worklog_id)
+}
+
+rule SubmissionRejected {
+    when: WorklogRefused(entry, failure)
+    requires: entry.status = submitted
+    ensures:
+        entry.status = rejected
+        entry.last_failure = failure
+        TimeDidNotReachJira(entry: entry, failure: failure)
+
+    @guidance
+        -- A refusal costs nothing but the trip: the time the operator entered
+        -- is still on the entry, the day still shows it, and submitting the
+        -- day again sends it once more.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant OneDayPerDate {
+    for a in WorkDays:
+        for b in WorkDays:
+            a != b implies a.starts_at != b.starts_at
+}
+
+invariant OneEntryPerTaskPerDay {
+    for a in WorklogEntries:
+        for b in WorklogEntries:
+            a != b implies a.day != b.day or a.work_item != b.work_item
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface JiraWorklogIntegration {
+    facing gateway: access/JiraGateway
+
+    exposes:
+        gateway.account_login
+        for entry in WorklogEntries where status = submitted:
+            entry.work_item.key
+            entry.jira_worklog_id
+            entry.day.starts_at
+            entry.duration
+            entry.submitted_at
+
+    provides:
+        for answer in WorklogAnswers:
+            WorklogWritten(answer.entry, answer.worklog_id)
+                when answer.failure = null and not answer.deleted
+            WorklogRefused(answer.entry, answer.failure)
+                when answer.failure != null and not answer.deleted
+            WorklogDeleted(answer.entry)
+                when answer.failure = null and answer.deleted
+            WorklogDeletionRefused(answer.entry, answer.failure)
+                when answer.failure != null and answer.deleted
+
+    @guarantee TimeReachesJiraOnlyOnTheOperatorsWord
+        -- Nothing is written to Jira while the operator types. A worklog is
+        -- created, updated or withdrawn only because they submitted a day or
+        -- removed an entry.
+
+    @guarantee OneWorklogPerEntry
+        -- An entry acknowledged by Jira holds the worklog it was given, and
+        -- every later submission of that entry updates that worklog. Time is
+        -- never logged twice for the same task on the same day.
+}

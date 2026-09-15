@@ -1,0 +1,188 @@
+-- allium: 3
+--
+-- Work items — the Jira issues the operator logs time against.
+--
+-- A work item is an identity (the issue key) and a set of *facts*: what Jira
+-- last said about the issue. Nothing here decides how time is spent on one;
+-- this file only says how an issue becomes known to the installation, and what
+-- happens when Jira does not know the key it is asked about.
+--
+-- Work items reach the installation two ways, and both end in the same place:
+-- the operator names one by key, or a day scan finds an activity that names
+-- it. Either way the installation asks Jira, and what Jira answers becomes the
+-- facts.
+
+use "../shared/access.allium" as access
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity JiraIssueAnswer {
+    -- What Jira hands back about one key: either the issue as it describes
+    -- it, or a refusal.
+    key: String
+    facts: WorkItemFacts?
+    failure: LookupFailure?
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum LookupStatus { requested | resolved | failed }
+
+enum LookupFailure {
+    unknown_issue           -- Jira has no issue under that key
+    | not_permitted         -- the issue exists, but not for this credential
+    | lookup_unavailable    -- Jira did not answer, or answered with an error
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value WorkItemFacts {
+    summary: String
+    status: String
+    url: String
+    is_closed: Boolean
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity WorkItem {
+    key: String                 -- the Jira issue key, e.g. the one a branch
+                                -- name or a commit message carries
+    facts: WorkItemFacts
+    first_seen_at: Timestamp
+    last_seen_at: Timestamp
+
+    is_closed: facts.is_closed
+
+    invariant WorkItemsAreKeyed {
+        key != ""
+    }
+}
+
+entity WorkItemLookup {
+    -- One question put to Jira about one key. It is how a key the operator
+    -- typed, or a key a scan read out of an activity, becomes a work item --
+    -- or is reported as a key Jira does not know.
+    key: String
+    status: LookupStatus
+    requested_at: Timestamp
+    failure: LookupFailure?
+
+    is_pending: status = requested
+
+    transitions status {
+        requested -> resolved
+        requested -> failed
+        failed -> requested
+        terminal: resolved
+    }
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule WorkItemAsked {
+    when: WorkItemRequested(key)
+    let known = WorkItem{key: key}
+    let asking = WorkItemLookup{key: key, status: requested}
+    requires: not exists known
+    requires: not exists asking
+    ensures:
+        WorkItemLookup.created(key: key, status: requested, requested_at: now)
+
+    @guidance
+        -- A key already known is not asked about again: the facts in hand are
+        -- the facts, until the next lookup of that key refreshes them.
+}
+
+rule WorkItemRecorded {
+    when: WorkItemObserved(key, facts)
+    let known = WorkItem{key: key}
+    let asking = WorkItemLookup{key: key}
+    requires: not exists known
+    ensures:
+        WorkItem.created(
+            key: key,
+            facts: facts,
+            first_seen_at: now,
+            last_seen_at: now)
+        if exists asking:
+            asking.status = resolved
+            asking.failure = null
+        WorkItemKnown(key: key)
+}
+
+rule WorkItemFactsRefreshed {
+    when: WorkItemObserved(key, facts)
+    let known = WorkItem{key: key}
+    let asking = WorkItemLookup{key: key}
+    requires: exists known
+    ensures:
+        known.facts = facts
+        known.last_seen_at = now
+        if exists asking:
+            asking.status = resolved
+            asking.failure = null
+        WorkItemKnown(key: key)
+}
+
+rule WorkItemLookupFailed {
+    when: WorkItemLookupRefused(key, failure)
+    let asking = WorkItemLookup{key: key}
+    requires: exists asking
+    requires: asking.status = requested
+    ensures:
+        asking.status = failed
+        asking.failure = failure
+        WorkItemUnavailable(key: key, failure: failure)
+
+    @guidance
+        -- A key Jira does not know is not a work item and never becomes an
+        -- entry on a day. The operator is told which key was refused and why,
+        -- and nothing already on the timesheet is disturbed.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant OneWorkItemPerKey {
+    for a in WorkItems:
+        for b in WorkItems:
+            a != b implies a.key != b.key
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface JiraIssueIntegration {
+    facing gateway: access/JiraGateway
+
+    exposes:
+        gateway.account_login
+        for lookup in WorkItemLookups where status = requested:
+            lookup.key
+            lookup.requested_at
+
+    provides:
+        for answer in JiraIssueAnswers:
+            WorkItemObserved(answer.key, answer.facts)
+                when answer.failure = null
+            WorkItemLookupRefused(answer.key, answer.failure)
+                when answer.failure != null
+
+    @guarantee AKeyIsAskedAboutOnce
+        -- A key already known is not asked about again while the installation
+        -- runs; a key Jira refuses may be asked about again when the operator
+        -- names it once more.
+}
