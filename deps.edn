@@ -1,0 +1,57 @@
+;; Development classpath: every brick of the workspace at once.
+;;
+;; The workspace follows the Polylith layout described in specs/PLAN.md §6 —
+;; components under components/, one base under bases/, one deployable project
+;; under projects/server. It is plain tools.deps: the `poly` tool is a nice to
+;; have, not a requirement.
+{:paths []
+
+ :deps {org.clojure/clojure {:mvn/version "1.12.3"}}
+
+ :aliases
+ {:dev
+  {:extra-paths ["development/src" "projects/server/resources"]
+   :extra-deps
+   {poly/time         {:local/root "components/time"}
+    poly/events       {:local/root "components/events"}
+    poly/db           {:local/root "components/db"}
+    poly/http         {:local/root "components/http"}
+    poly/access       {:local/root "components/access"}
+    poly/config       {:local/root "components/config"}
+    poly/github       {:local/root "components/github"}
+    poly/jira         {:local/root "components/jira"}
+    poly/pull-request {:local/root "components/pull-request"}
+    poly/collector    {:local/root "components/collector"}
+    poly/work-item    {:local/root "components/work-item"}
+    poly/worklog      {:local/root "components/worklog"}
+    poly/discovery    {:local/root "components/discovery"}
+    poly/ui           {:local/root "components/ui"}
+    poly/server       {:local/root "bases/server"}}}
+
+  ;; Every brick's tests, run with Clojure's own runner.
+  :test
+  {:extra-paths ["components/time/test"
+                 "components/events/test"
+                 "components/db/test"
+                 "components/http/test"
+                 "components/access/test"
+                 "components/config/test"
+                 "components/github/test"
+                 "components/jira/test"
+                 "components/pull-request/test"
+                 "components/collector/test"
+                 "components/work-item/test"
+                 "components/worklog/test"
+                 "components/discovery/test"
+                 "components/ui/test"
+                 "bases/server/test"]
+   :exec-fn odato.test-runner/run
+   :main-opts ["-m" "odato.test-runner"]}
+
+  :build
+  {:deps {io.github.clojure/tools.build {:mvn/version "0.10.9"}}
+   :ns-default build
+   :extra-paths ["projects/server"]}
+
+  :run
+  {:main-opts ["-m" "odato.server.main"]}}}
