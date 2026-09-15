@@ -15,10 +15,21 @@
 -- happened on. Each named issue becomes a task on that day, with no time on
 -- it: the scan says *what* was worked on, never *how long*.
 --
+-- Several activities commonly belong to the same issue -- two pull requests, a
+-- review and three comments are one ticket's day. They stay separate here,
+-- each with its own title and its own moment, and the timesheet groups them
+-- under the task they name. The time is put on the task, once; the activities
+-- are what the operator reads to decide how much.
+--
+-- An activity naming no issue, or naming one Jira does not know, is kept all
+-- the same, with its title: it is an orphan, and the operator can attach it to
+-- a task themselves.
+--
 -- Two promises hold, and they are what makes a scan safe to ask for twice:
 --
---   * a scan only ever adds -- it never removes a task from a day, and never
---     touches the time the operator entered, submitted or had acknowledged;
+--   * a scan only ever adds -- it never removes a task or an activity from a
+--     day, never records the same activity twice, and never touches the time
+--     the operator entered, submitted or had acknowledged;
 --   * a scan is asked for, one day at a time. Nothing scans on a schedule and
 --     nothing scans a day the operator did not choose.
 
@@ -91,7 +102,7 @@ entity DayScan {
     scanning_tasks: tasks where status = scanning
     failed_tasks: tasks where status = failed
 
-    activities: DiscoveredActivity with scan = this
+    activities: DiscoveredActivity with found_by = this
     attributed_activities: activities where is_attributed
     unattributed_activities: activities where not is_attributed
 
@@ -139,15 +150,28 @@ entity ScanTask {
 }
 
 entity DiscoveredActivity {
-    -- One activity the scan found on the day, and what it was attributed to.
-    scan: DayScan
+    -- One thing the operator did on the day, and what it was attributed to.
+    -- It belongs to the day, not to the scan that found it: the day keeps its
+    -- activities, and scanning it again adds the ones found since.
     day: worklog/WorkDay
-    observation: ActivityObservation
+    found_by: DayScan               -- the scan that first saw it
+    source: ActivitySource
+    happened_at: Timestamp
+    reference: String               -- what it was: the pull request, the
+                                    -- comment, the issue
+    title: String
 
+    named_keys: Set<String>         -- the keys the activity itself carries
+    pending_keys: Set<String>       -- keys asked of Jira, not answered yet
     attributed_keys: Set<String>    -- the keys that became tasks on the day
 
     is_attributed: attributed_keys.count > 0
-    names_no_issue: observation.issue_keys.count = 0
+
+    -- An orphan: nothing on the day claims it. It keeps its title and its
+    -- moment so the operator can read it and attach it to a task.
+    is_orphan: attributed_keys.count = 0 and pending_keys.count = 0
+
+    attributed_to(key): key in attributed_keys
 }
 
 ------------------------------------------------------------
@@ -268,31 +292,61 @@ rule ScanSourceFailed {
 
 rule ActivityRecorded {
     when: ActivityObserved(task, observation)
+    let already = DiscoveredActivity{
+        day: task.scan.day,
+        source: observation.source,
+        reference: observation.reference}
     requires: falls_within_day(observation.happened_at, task.scan.day.starts_at)
+    requires: not exists already
     ensures:
         let activity = DiscoveredActivity.created(
-            scan: task.scan,
             day: task.scan.day,
-            observation: observation,
+            found_by: task.scan,
+            source: observation.source,
+            happened_at: observation.happened_at,
+            reference: observation.reference,
+            title: observation.title,
+            named_keys: observation.issue_keys,
+            pending_keys: {},
             attributed_keys: {})
         for key in observation.issue_keys:
             KeyFoundInActivity(activity: activity, key: key)
 
     @guidance
         -- An activity that did not happen on the day being scanned is not that
-        -- day's work, whatever the source returned alongside it.
+        -- day's work, whatever the source returned alongside it. An activity
+        -- the day already carries is not recorded again: scanning a day twice
+        -- leaves it with one line per thing done, and leaves an orphan the
+        -- operator has since attached attached.
 }
 
 ------------------------------------------------------------
 -- Rules -- turning activities into tasks
 ------------------------------------------------------------
 
+rule OperatorAttachesActivityToTask {
+    when: OperatorAttachesActivity(activity, key)
+    requires: within_timesheet_window(
+        activity.day.starts_at, now, worklog/config.timesheet_days)
+    ensures:
+        KeyFoundInActivity(activity: activity, key: key)
+
+    @guidance
+        -- An orphan is attached by naming the task it belongs to, and from
+        -- there it is an activity like any other: the task lands on the day if
+        -- it was not there, and the activity joins the lines grouped under it.
+        -- The key the operator gave is not added to what the activity *names*
+        -- -- that stays what the scan read.
+}
+
 rule KeyAlreadyKnown {
     when: KeyFoundInActivity(activity, key)
     let known = items/WorkItem{key: key}
     requires: exists known
+    requires: not key in activity.attributed_keys
     ensures:
         activity.attributed_keys = activity.attributed_keys + { key }
+        activity.pending_keys = activity.pending_keys - { key }
         worklog/TaskFoundOnDay(day: activity.day, work_item: known)
 }
 
@@ -301,37 +355,38 @@ rule KeyNeedsLookup {
     let known = items/WorkItem{key: key}
     requires: not exists known
     ensures:
+        activity.pending_keys = activity.pending_keys + { key }
         items/WorkItemRequested(key: key)
 
     @guidance
         -- The key is what the activity carries; what the task *is* comes from
-        -- Jira. Until Jira answers, the activity is on the day without being
-        -- attributed to anything.
+        -- Jira. Until Jira answers, the activity is on the day, waiting, and
+        -- is not yet an orphan.
 }
 
 rule KeyResolved {
     when: items/WorkItemKnown(key)
     let known = items/WorkItem{key: key}
     for activity in DiscoveredActivities:
-        requires: key in activity.observation.issue_keys
-        requires: not key in activity.attributed_keys
+        requires: key in activity.pending_keys
         ensures:
             activity.attributed_keys = activity.attributed_keys + { key }
+            activity.pending_keys = activity.pending_keys - { key }
             worklog/TaskFoundOnDay(day: activity.day, work_item: known)
 }
 
 rule KeyNeverResolved {
     when: items/WorkItemUnavailable(key, failure)
     for activity in DiscoveredActivities:
-        requires: key in activity.observation.issue_keys
-        requires: not key in activity.attributed_keys
+        requires: key in activity.pending_keys
         ensures:
-            ActivityLeftUnattributed(activity: activity, key: key, failure: failure)
+            activity.pending_keys = activity.pending_keys - { key }
+            ActivityLeftOrphan(activity: activity, key: key, failure: failure)
 
     @guidance
-        -- A key Jira does not know puts nothing on the day. The activity is
-        -- still shown as something the operator did, so they can put the right
-        -- task on the day themselves.
+        -- A key Jira does not know puts nothing on the day. The activity stays
+        -- as an orphan, with its title and its moment, and the operator can
+        -- attach it to the right task themselves.
 }
 
 ------------------------------------------------------------
@@ -403,6 +458,12 @@ surface DayScanStatus {
     exposes:
         operator.account_login
         active.count
+        for orphan in DiscoveredActivities where is_orphan:
+            orphan.day.starts_at
+            orphan.source
+            orphan.happened_at
+            orphan.reference
+            orphan.title
         for scan in active:
             scan.day.starts_at
             scan.status
@@ -418,15 +479,23 @@ surface DayScanStatus {
 
     provides:
         OperatorRequestsScan(worklog/WorkDay)
+        for activity in DiscoveredActivities where is_orphan:
+            OperatorAttachesActivity(activity, items/WorkItem.key)
 
     @guarantee ScanningIsAskedFor
         -- Nothing scans on a schedule. A day is scanned because the operator
         -- asked for that day, and a day is never scanned behind their back.
 
     @guarantee AScanOnlyAdds
-        -- Scanning a day again adds the tasks found since and leaves
-        -- everything already on the day exactly as it was -- the entered time,
-        -- the submitted time, and the tasks the operator put there themselves.
+        -- Scanning a day again adds the tasks and the activities found since
+        -- and leaves everything already on the day exactly as it was -- the
+        -- entered time, the submitted time, the tasks the operator put there
+        -- themselves, and the orphans they have attached.
+
+    @guarantee NothingFoundIsThrownAway
+        -- An activity that names no issue, or names one Jira does not know, is
+        -- kept with its title and its moment rather than dropped. It is an
+        -- orphan until the operator attaches it to a task.
 }
 
 surface GithubActivityIntegration {

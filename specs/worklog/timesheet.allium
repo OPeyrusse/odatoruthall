@@ -12,6 +12,16 @@
 -- showing five of them. What is already filled is shown as it was entered --
 -- the text the operator typed, the total it adds up to, and whether Jira has
 -- it yet.
+--
+-- A day reads as one row per task. Under a task sit the lines that led to it:
+-- the pull requests, the reviews, the comments, the issues touched that day.
+-- Several lines under one task is the normal case -- two pull requests on the
+-- same ticket are one ticket's day -- and there is still exactly one place to
+-- put the time: the task. The lines carry none of their own; they are what the
+-- operator reads to decide how long the ticket took.
+--
+-- Lines that belong to no task are shown apart, with their titles, and can be
+-- attached to a task from here.
 
 use "../shared/access.allium" as access
 use "./work-item.allium" as items
@@ -31,6 +41,8 @@ surface Timesheet {
         where within_timesheet_window(starts_at, now, worklog/config.timesheet_days))
 
     let week_total = total_duration(days -> total_logged)
+    let lines = discovery/DiscoveredActivities
+        where within_timesheet_window(day.starts_at, now, worklog/config.timesheet_days)
 
     exposes:
         operator.account_login
@@ -46,6 +58,8 @@ surface Timesheet {
             day.is_settled
             day.has_been_scanned
             day.last_scanned_at
+            -- One row per task, and one time field on it, whatever the day
+            -- turned up under it.
             for entry in by_task(day.entries):
                 entry.work_item.key
                 entry.work_item.facts.summary
@@ -55,6 +69,8 @@ surface Timesheet {
                 entry.origin
                 entry.is_filled
                 entry.last_failure
+                lines_for(lines, day, entry.work_item.key).count
+            orphan_lines(lines, day).count
 
     provides:
         OperatorOpensTimesheet()
@@ -87,6 +103,11 @@ surface Timesheet {
         -- typed, alongside the total it contributes to. Text that says no
         -- length of time is refused and changes nothing.
 
+    @guarantee OneTimeFieldPerTask
+        -- A task has one entry on a day and one field to put time in, however
+        -- many pull requests, reviews or comments it gathered. The day's total
+        -- is the sum of those fields and nothing else.
+
     @guarantee TotalsAreTheSumOfTheDay
         -- A day's total is the time on its tasks, whatever their state:
         -- drafted, on its way to Jira, or acknowledged. The operator can
@@ -102,7 +123,8 @@ surface DaySheet {
 
     let scans = discovery/DayScans where day = day
     let last_scan = most_recent(scans)
-    let loose_ends = last_scan.unattributed_activities
+    let lines = discovery/DiscoveredActivities where day = day
+    let orphans = lines where is_orphan
 
     exposes:
         operator.account_login
@@ -116,6 +138,8 @@ surface DaySheet {
         day.acknowledged_entries.count
         day.rejected_entries.count
         day.last_scanned_at
+        -- One group per task: the ticket, the single time field, and the
+        -- lines that led to it.
         for entry in by_task(day.entries):
             entry.work_item.key
             entry.work_item.facts.summary
@@ -128,14 +152,21 @@ surface DaySheet {
             entry.submitted_at
             entry.acknowledged_at
             entry.last_failure
+            for line in by_moment(lines) where attributed_to(entry.work_item.key):
+                line.source
+                line.happened_at
+                line.reference
+                line.title
+                line.named_keys
         last_scan.finished_at
         last_scan.failed_tasks.count
-        for activity in loose_ends:
-            activity.observation.source
-            activity.observation.happened_at
-            activity.observation.reference
-            activity.observation.title
-            activity.observation.issue_keys
+        orphans.count
+        for orphan in by_moment(orphans):
+            orphan.source
+            orphan.happened_at
+            orphan.reference
+            orphan.title
+            orphan.named_keys
 
     provides:
         OperatorNamesTask(day, items/WorkItem.key)
@@ -144,6 +175,8 @@ surface DaySheet {
         for entry in day.entries:
             OperatorEntersTime(entry, entry.entered_text)
             OperatorRemovesEntry(entry)
+        for orphan in orphans:
+            OperatorAttachesActivity(orphan, items/WorkItem.key)
 
     -- The checker does not resolve surface names across modules
     -- (allium-cli 3.6.1), so it reports this edge as an unknown name; it is
@@ -155,10 +188,17 @@ surface DaySheet {
         -- What a scan found is a task on the day with no time on it. The
         -- operator says how long they spent; nothing else does.
 
-    @guarantee LooseEndsAreShownNotDropped
-        -- Activity the scan could not attribute to an issue is still shown,
-        -- with what it was and when it happened, so the operator can put the
-        -- right task on the day themselves.
+    @guarantee LinesGroupUnderTheirTask
+        -- Everything the day turned up for one ticket -- several pull
+        -- requests, a review, three comments -- reads as lines under that
+        -- ticket's single row. The lines say what was done and when; the time
+        -- goes on the row.
+
+    @guarantee OrphansKeepTheirTitle
+        -- A line belonging to no task is kept with its title and its moment
+        -- rather than dropped, and can be attached to a task from here. Once
+        -- attached it joins that task's lines, and the task lands on the day
+        -- if it was not already there.
 
     @guarantee WhatJiraHasIsVisible
         -- Each task says whether its time is drafted here, on its way, held by
@@ -172,8 +212,9 @@ surface WorklogPersistence {
         runtime.started_at
 
     @guarantee TheWorklogOutlivesTheProcess
-        -- Days, tasks, the text entered against them and what Jira has
-        -- acknowledged all survive a restart. Only what a scan observed is
-        -- transient: the activity behind a task is not kept, and a day is
-        -- scanned again when the operator wants it looked at again.
+        -- Days, tasks, the text entered against them, the lines a scan found
+        -- and what Jira has acknowledged all survive a restart. A day keeps
+        -- what was discovered on it, so the lines a total was estimated from
+        -- are still there tomorrow, and scanning it again adds what has
+        -- happened since.
 }

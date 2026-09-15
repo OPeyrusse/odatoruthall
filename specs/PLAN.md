@@ -169,13 +169,25 @@ the comments they wrote, the issues they created and the issues they closed —
 one source at a time, paginating to exhaustion, with quota exhaustion a wait
 rather than a failure, exactly as gitdesk collects. Every activity names the
 Jira issues it belongs to; each named issue becomes a task on that day with no
-time on it. Activity naming no issue Jira knows is shown as a loose end rather
-than dropped, so the operator can attach the right task themselves.
+time on it.
+
+Activities belong to the *day*, not to the scan that found them: the day keeps
+them, a second scan adds only what it has not already recorded, and they
+survive a restart along with the rest of the worklog. Several activities
+commonly name the same issue — two pull requests, a review, three comments —
+and they stay separate, each with its own title and moment.
+
+An activity naming no issue, or naming one Jira does not know, is kept as an
+*orphan*, with its title, and the operator attaches it to a task from the day
+view. Attaching goes through the same path as a key the scan read: the task
+lands on the day if it was not there, and the activity joins the lines grouped
+under it.
 
 **Surfaces.** The five days side by side with their totals and their
-breakdowns; one day in detail with its entries, their states and the last
-scan's loose ends; the commands to name a task, enter time, remove an entry,
-submit a day and scan a day.
+breakdowns; one day in detail, read as one row per task — the ticket, its
+single time field, and the lines that led to it grouped underneath, with the
+orphans apart; the commands to name a task, enter time, remove an entry,
+attach an orphan, submit a day and scan a day.
 
 ## 5. Method and sequence
 
@@ -217,6 +229,16 @@ Recorded here so the decisions are not lost, and so nothing leaks into the
   keeps the single-container deployment honest).
 - **Secrets.** `GITHUB_TOKEN` and `JIRA_TOKEN` from the environment, never
   persisted with the configuration.
+- **UI: Datastar.** The interface is server-rendered HTML made dynamic with
+  [Datastar](https://data-star.dev) — `data-*` attributes for signals and
+  actions, and SSE from the server patching fragments in place. No SPA, no
+  client-side store, no JSON API of its own: the server already owns the
+  snapshot and the worklog, so it renders them and pushes the changes.
+  It suits both applications: a collection cycle patches the gitdesk counts as
+  its sources land, a day scan patches the timesheet as the tasks and the lines
+  appear under their tickets, and typing "1h 30m" posts the field and gets the
+  re-rendered day total back. Nothing of this reaches the spec — the spec says
+  what is exposed and what commands exist, never how they travel.
 - **Packaging.** One Docker image running the single server locally.
 
 ## 7. Decisions taken
@@ -257,12 +279,20 @@ These settle worklog:
   left it is settled.
 - **Scanning is asked for, one day at a time.** Nothing scans on a schedule.
   The operator chooses the day from the timesheet and asks for it.
-- **A scan only ever adds.** It never removes a task from a day and never
-  touches entered, submitted or acknowledged time, which is what makes it
-  safe to scan the same day twice.
-- **The worklog outlives the process.** Days, tasks, entered text and what
-  Jira acknowledged survive a restart — unlike anything gitdesk collects.
-  Only the observed activity behind a discovered task is transient.
+- **A scan only ever adds.** It never removes a task or an activity from a
+  day, never records the same activity twice, and never touches entered,
+  submitted or acknowledged time — which is what makes it safe to scan the
+  same day twice.
+- **Activities belong to the day and are grouped by ticket.** Several
+  activities on one ticket are one row with one time field; the activities are
+  the lines under it, carrying no time of their own, and are what the operator
+  reads to decide how long the ticket took.
+- **Orphans are kept, not dropped.** An activity naming no issue Jira knows
+  keeps its title and can be attached to a task from the day view.
+- **The worklog outlives the process.** Days, tasks, entered text, the lines a
+  scan found and what Jira acknowledged survive a restart — unlike anything
+  gitdesk collects. The lines a total was estimated from are still there
+  tomorrow.
 - **Worklog parameters are spec constants, not settings.** The number of days,
   the working days and the bounds on one entry live in the worklog slice's
   `config` block; the operator's `Settings` surface stays gitdesk's.

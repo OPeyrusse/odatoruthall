@@ -8,6 +8,11 @@
 -- exactly as the operator typed it -- "1h 30m" -- and the duration that text
 -- means. Text that means nothing is refused and changes nothing.
 --
+-- One entry per task per day, whatever the day turned up under it: two pull
+-- requests, a review and four comments on the same ticket are one entry with
+-- one duration. What produced it is discovered activity, and it carries no
+-- time of its own.
+--
 -- Time is drafted here and submitted to Jira on the operator's word: nothing
 -- is written to Jira as a side effect of typing. An entry is therefore always
 -- in one of four states, and the operator can always tell which:
