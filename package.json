@@ -1,0 +1,17 @@
+{
+  "name": "odatoruthall-assets",
+  "private": true,
+  "description": "Builds the two front-end assets the server serves: the Tailwind stylesheet and the Datastar bundle. Both outputs are committed, so the workspace runs with `clojure -M:dev:run` and the Docker image builds without Node.",
+  "scripts": {
+    "css": "tailwindcss --input components/ui/css/app.css --output bases/server/resources/public/css/app.css --minify",
+    "css:watch": "tailwindcss --input components/ui/css/app.css --output bases/server/resources/public/css/app.css --watch",
+    "js": "esbuild node_modules/@starfederation/datastar/dist/bundles/datastar.js --bundle --minify --format=esm --outfile=bases/server/resources/public/js/datastar.js",
+    "assets": "npm run css && npm run js"
+  },
+  "devDependencies": {
+    "@starfederation/datastar": "1.0.0-beta.11",
+    "@tailwindcss/cli": "^4.3.3",
+    "esbuild": "^0.25.0",
+    "tailwindcss": "^4.3.3"
+  }
+}

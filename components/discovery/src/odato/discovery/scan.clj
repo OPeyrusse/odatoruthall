@@ -28,6 +28,9 @@
     (do (core/emit! sys {:type :scan/refused :day day-starts-at :reason reason})
         {:started false :reason reason})
     (let [scan-id (str (random-uuid))]
+      ;; The day has to exist before anything can be hung off it: a scan is one
+      ;; of the things that brings a day into being.
+      (worklog/ensure-day! sys day-starts-at)
       (db/transact! (core/volatile* sys)
                     [{:scan/id scan-id
                       :scan/day-starts-at day-starts-at

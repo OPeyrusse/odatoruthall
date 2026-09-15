@@ -14,4 +14,7 @@
         poly/work-item {:local/root "../../components/work-item"}
         poly/worklog {:local/root "../../components/worklog"}
         poly/discovery {:local/root "../../components/discovery"}
-        poly/ui {:local/root "../../components/ui"}}}
+        poly/ui {:local/root "../../components/ui"}
+        poly/events {:local/root "../../components/events"}
+        poly/http {:local/root "../../components/http"}
+        poly/demo {:local/root "../../components/demo"}}}

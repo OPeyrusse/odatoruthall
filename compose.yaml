@@ -1,0 +1,32 @@
+# The whole installation, locally.
+#
+#   docker compose up --build            with real credentials from .env
+#   ODATO_DEMO=1 docker compose up        with the scripted data and no token
+#
+# GITHUB_TOKEN and JIRA_TOKEN are never persisted with the configuration: they
+# reach the process from the environment and nothing writes them down.
+services:
+  odatoruthall:
+    build:
+      context: .
+      args:
+        JDK_VERSION: "26"
+    image: odatoruthall:latest
+    ports:
+      - "${PORT:-7777}:7777"
+    environment:
+      # Leave ODATO_DEMO set to run against scripted data, with no credential
+      # used and no request leaving the container.
+      ODATO_DEMO: "${ODATO_DEMO:-false}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+      GITHUB_API_URL: "${GITHUB_API_URL:-https://api.github.com}"
+      JIRA_BASE_URL: "${JIRA_BASE_URL:-}"
+      JIRA_EMAIL: "${JIRA_EMAIL:-}"
+      JIRA_TOKEN: "${JIRA_TOKEN:-}"
+      ODATO_DB_FILE: /data/odatoruthall.edn
+    volumes:
+      - worklog:/data
+    restart: unless-stopped
+
+volumes:
+  worklog:

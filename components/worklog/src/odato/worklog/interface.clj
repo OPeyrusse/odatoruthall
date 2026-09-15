@@ -45,6 +45,13 @@
 
 (defn within-window? [sys day-starts-at] (core/within-window? sys day-starts-at))
 
+(defn ensure-day!
+  "The UTC day opening at `day-starts-at`, created if it was not there. A day
+  exists because something was put on it — a scan, an entry, a submission — and
+  because the timesheet shows it."
+  [sys day-starts-at]
+  (core/ensure-day! sys day-starts-at))
+
 (defn mark-scanned!
   "A day records when it was last scanned, whether or not the scan found
   anything: a day scanned and empty is a different thing from a day never

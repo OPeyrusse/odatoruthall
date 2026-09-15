@@ -89,7 +89,7 @@
      :is-in-flight (boolean (some :in-flight? entries))
      :is-settled (and (pos? (count filled)) (= (count acknowledged) (count filled)))}))
 
-(defn- ensure-day! [sys day-starts-at]
+(defn ensure-day! [sys day-starts-at]
   (when-not (db/lookup (db/db (conn sys)) :work-day/starts-at day-starts-at)
     (db/transact! (conn sys) [{:work-day/starts-at day-starts-at}]))
   day-starts-at)
