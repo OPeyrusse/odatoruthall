@@ -6,3 +6,6 @@ node_modules/
 *.log
 .DS_Store
 /data/
+
+# Credentials never belong in the repository.
+.env

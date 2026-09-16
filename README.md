@@ -16,46 +16,150 @@ Two applications, one server, one operator:
 does, in domain terms; this code implements them. Read the spec before changing
 behaviour, and change it in the same commit when behaviour changes.
 
+## Credentials
+
+The process reads everything it is told from the environment, and nothing else:
+`GITHUB_TOKEN` and `JIRA_TOKEN` are never written down beside the
+configuration, never persisted, and never reach a page. Their *presence and
+validity* are all the domain knows about them — which is why a missing token
+leaves a badge saying so instead of breaking a dashboard.
+
+| Variable | What it is | Default |
+|---|---|---|
+| `GITHUB_TOKEN` | The operator's GitHub token. Its owner is the operator: "me" is always the token's owner. | — |
+| `GITHUB_API_URL` | Move it for GitHub Enterprise. | `https://api.github.com` |
+| `JIRA_BASE_URL` | The Jira Cloud site, e.g. `https://acme.atlassian.net`. | — |
+| `JIRA_EMAIL` | The account the token belongs to. | — |
+| `JIRA_TOKEN` | A Jira API token. | — |
+| `ODATO_DB_FILE` | Where the worklog is kept. Unset, the whole installation is in memory and the configuration goes with the process. | unset |
+| `ODATO_DEMO` | `1` runs against scripted data: no credential is used and no request leaves the process. | `false` |
+| `PORT` | The port the server listens on. | `7777` |
+
+**Getting them.** A GitHub [personal access token](https://github.com/settings/tokens)
+needs read access to the repositories being watched — `repo` on a classic
+token, or *Contents*, *Pull requests*, *Metadata* (read) and *Issues* (read, for
+the day scan) on a fine-grained one. A Jira token comes from
+[id.atlassian.com](https://id.atlassian.com/manage-profile/security/api-tokens)
+and is paired with the email of the account that made it.
+
+**Passing them.** Copy the template and fill it in — `.env` is git-ignored:
+
+```sh
+cp .env.example .env
+$EDITOR .env
+```
+
+`./scripts/run.sh` and `docker compose` both read that file. Nothing else does:
+plain `clojure -M:dev:run` and plain `docker run` read the environment they are
+given, so with those you export the variables yourself.
+
 ## Running it
 
+**From the workspace, against the real services.**
+
+```sh
+npm install && npm run assets   # once: the stylesheet and the Datastar bundle
+./scripts/run.sh                # loads ./.env, then starts on http://localhost:7777
+```
+
+Without `.env`, export them yourself:
+
+```sh
+GITHUB_TOKEN=ghp_… JIRA_BASE_URL=https://acme.atlassian.net \
+  JIRA_EMAIL=you@acme.com JIRA_TOKEN=… ODATO_DB_FILE=./data/odatoruthall.edn \
+  clojure -M:dev:run
+```
+
 **With no credential at all.** The installation ships mock GitHub and Jira
-services, and scripted data that puts something under every classification the
+services and scripted data that puts something under every classification the
 specification names:
 
 ```sh
-npm install && npm run assets      # once: the stylesheet and the Datastar bundle
-ODATO_DEMO=1 clojure -M:dev:run    # http://localhost:7777
+ODATO_DEMO=1 ./scripts/run.sh   # http://localhost:7777
 ```
 
-**Against the real services.** Copy `.env.example` to `.env` and fill it in:
+gitdesk works with GitHub alone; worklog needs Jira as well and says so through
+the Jira badge rather than by failing when the operator tries to log time. So a
+`GITHUB_TOKEN` on its own is a perfectly good installation with half the shell
+greyed out.
+
+## Building the jar
 
 ```sh
-GITHUB_TOKEN=…            # its owner is the operator: "me" is the token's owner
-JIRA_BASE_URL=https://your-site.atlassian.net
-JIRA_EMAIL=… JIRA_TOKEN=…
-ODATO_DB_FILE=./data/odatoruthall.edn   # where the worklog is kept
-clojure -M:dev:run
+./scripts/build-jar.sh          # projects/server/target/odatoruthall.jar
+./scripts/smoke-jar.sh          # starts it on the scripted data, checks both apps answer
 ```
 
-A credential that was never offered leaves its badge saying so rather than
-making the dashboard fail: gitdesk works with GitHub alone, and worklog says
-through the Jira badge that it cannot log a minute without Jira.
-
-**In Docker.**
+Running what it built:
 
 ```sh
-docker compose up --build              # with .env
-ODATO_DEMO=1 docker compose up --build # with the scripted data
+ODATO_DEMO=1 java -jar projects/server/target/odatoruthall.jar
+
+GITHUB_TOKEN=ghp_… JIRA_BASE_URL=https://acme.atlassian.net \
+  JIRA_EMAIL=you@acme.com JIRA_TOKEN=… ODATO_DB_FILE=./data/odatoruthall.edn \
+  java -jar projects/server/target/odatoruthall.jar
 ```
 
-## Building
+`ODATO_VERSION` names the build; without it the version is counted from the git
+revisions.
+
+## Building the image
+
+One image, one process, both applications: Node builds the two assets, a JDK 26
+builds the jar, a JRE runs it.
 
 ```sh
-./scripts/build-jar.sh     # projects/server/target/odatoruthall.jar
-./scripts/smoke-jar.sh     # starts it on the scripted data and checks both apps answer
-clojure -M:dev:test        # every brick's tests
+docker build -t odatoruthall:latest .
+
+# with the scripted data — nothing to configure, nothing leaves the container
+docker run --rm -p 7777:7777 -e ODATO_DEMO=1 odatoruthall:latest
+
+# against the real services, with the worklog kept in a named volume
+docker run --rm -p 7777:7777 \
+  -e GITHUB_TOKEN -e JIRA_BASE_URL -e JIRA_EMAIL -e JIRA_TOKEN \
+  -v odato-worklog:/data \
+  odatoruthall:latest
+
+# or hand it the whole file — but override ODATO_DB_FILE, because the path in
+# .env is the one that suits a workspace run, not a container
+docker run --rm -p 7777:7777 --env-file .env \
+  -e ODATO_DB_FILE=/data/odatoruthall.edn -v odato-worklog:/data \
+  odatoruthall:latest
+```
+
+The image already sets `ODATO_DB_FILE=/data/odatoruthall.edn`, so `/data` is the
+only volume there is: the worklog is the only thing that outlives the process.
+Everything gitdesk collects is rebuilt by the collection that starts with it.
+`--build-arg JDK_VERSION=25` lowers the JDK if 26 is not published for your
+platform yet.
+
+## compose.yaml
+
+`compose.yaml` is the same image with everything around it already decided, so
+that running the installation for real is one command instead of the long
+`docker run` above. It reads `.env` on its own, maps the port, declares the `worklog` named volume
+that keeps `/data` across restarts and rebuilds, and pins `ODATO_DB_FILE` to the
+path inside the container, so the `.env` that suits a workspace run also suits
+this one.
+
+```sh
+docker compose up --build              # reads ./.env
+ODATO_DEMO=1 docker compose up --build # the scripted data instead
+docker compose logs -f                 # what the collection cycle is doing
+docker compose down                    # stop; the worklog volume survives
+docker compose down -v                 # stop and throw the worklog away
+```
+
+It is a convenience, not a requirement: `docker build` and `docker run` above do
+the same thing by hand, and neither the jar nor the image needs compose to run.
+
+## Everything else
+
+```sh
+clojure -M:dev:test        # every brick's tests, against the mock services
 ./scripts/check-specs.sh   # the Allium gate (needs `cargo install allium-cli`)
 npm run assets             # rebuild the stylesheet and the Datastar bundle
+npm run css:watch          # ... and keep rebuilding the stylesheet while editing views
 ```
 
 Both built assets are committed, so the jar and the image build without Node.
