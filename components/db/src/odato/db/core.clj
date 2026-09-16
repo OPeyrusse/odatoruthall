@@ -78,33 +78,81 @@
         (pr (mapv (fn [dt] [(:e dt) (:a dt) (:v dt)]) (d/datoms db :eavt)))))
     (.renameTo tmp (io/file file))))
 
+
+
 ;; ------------------------------------------------------------------- store
 
-(defn open [{:keys [file]}]
-  (let [loaded (when (and file (.exists (io/file file)))
+(defn- restore-or-create
+  "The durable half, from a DataScript storage.
+
+  A stored database carries the schema it was stored with, so a schema that has
+  moved on since — a new attribute, a new unique key — would be silently
+  ignored. When that happens the datoms are re-initialised under the schema in
+  force, which is also what re-indexes them."
+  [storage schema]
+  (if-some [conn (d/restore-conn storage)]
+    (if (= (:schema (d/empty-db schema)) (:schema @conn))
+      conn
+      (d/conn-from-datoms (vec (d/datoms @conn :eavt)) schema {:storage storage}))
+    (d/create-conn schema {:storage storage})))
+
+(defn- from-file [file]
+  (let [loaded (when (.exists (io/file file))
                  (try (read-datoms file)
                       (catch Exception e
                         (throw (ex-info "the stored worklog could not be read"
-                                        {:file (str file)} e)))))
-        durable (if (seq loaded)
-                  (d/conn-from-db
-                   (d/init-db (map (fn [[e a v]] (d/datom e a v)) loaded) durable-schema))
-                  (d/create-conn durable-schema))
+                                        {:file (str file)} e)))))]
+    (if (seq loaded)
+      (d/conn-from-db
+       (d/init-db (map (fn [[e a v]] (d/datom e a v)) loaded) durable-schema))
+      (d/create-conn durable-schema))))
+
+(defn open
+  "Opens a store.
+
+  The durable half is kept wherever it is told to be kept: a DataScript
+  `:storage` (Turso, say), a `:file` of EDN, or nowhere — in which case the
+  configuration and the worklog go with the process. The volatile half is
+  always in memory, because the specification says the snapshot dies with the
+  process."
+  [{:keys [file storage]}]
+  (let [backend (cond storage :storage file :file :else :memory)
+        durable (case backend
+                  :storage (restore-or-create storage durable-schema)
+                  :file (from-file file)
+                  :memory (d/create-conn durable-schema))
         store {:durable durable
                :volatile (d/create-conn volatile-schema)
-               :file (when file (str file))
-               :writer (atom nil)}]
-    (when file
+               :backend backend
+               :storage storage
+               :file (when file (str file))}]
+    ;; A storage writes through on every transaction on its own; a file needs
+    ;; somebody to notice.
+    (when (= :file backend)
       (d/listen! durable ::persist
                  (fn [{:keys [db-after]}] (write-datoms! file db-after))))
     store))
 
 (defn close! [store]
-  (when (:file store) (d/unlisten! (:durable store) ::persist))
+  (when (= :file (:backend store)) (d/unlisten! (:durable store) ::persist))
   store)
 
 (defn flush! [store]
-  (when-let [file (:file store)] (write-datoms! file @(:durable store)))
+  (case (:backend store)
+    :file (write-datoms! (:file store) @(:durable store))
+    :storage (d/store @(:durable store))
+    nil)
+  store)
+
+(defn collect-garbage!
+  "Drops the nodes no live database references. Only a storage has any; a file
+  is rewritten whole every time."
+  [store]
+  (when (= :storage (:backend store))
+    ;; The garbage is the storage's, not the connection's: DataScript walks
+    ;; the live databases it knows of and drops every address none of them
+    ;; reaches.
+    (d/collect-garbage (:storage store)))
   store)
 
 ;; ----------------------------------------------------------------- queries

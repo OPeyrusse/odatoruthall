@@ -31,9 +31,18 @@ leaves a badge saying so instead of breaking a dashboard.
 | `JIRA_BASE_URL` | The Jira Cloud site, e.g. `https://acme.atlassian.net`. | — |
 | `JIRA_EMAIL` | The account the token belongs to. | — |
 | `JIRA_TOKEN` | A Jira API token. | — |
-| `ODATO_DB_FILE` | Where the worklog is kept. Unset, the whole installation is in memory and the configuration goes with the process. | unset |
+| `TURSO_URL` | A Turso database, as the `libsql://…` URL Turso hands out. Set with `TURSO_TOKEN`, it is where the worklog lives. | unset |
+| `TURSO_TOKEN` | The Turso database token. | unset |
+| `TURSO_TABLE` | The table the store keeps its nodes in. | `odatoruthall` |
+| `ODATO_DB_FILE` | Where the worklog is kept when Turso is not configured. Unset too, and the whole installation is in memory: the configuration and the worklog go with the process. | unset |
 | `ODATO_DEMO` | `1` runs against scripted data: no credential is used and no request leaves the process. | `false` |
 | `PORT` | The port the server listens on. | `7777` |
+
+**Where the worklog lives.** The installation looks in that order — Turso,
+then the file, then nowhere — and says which one it chose in its first lines of
+log. A Turso that is configured and cannot be reached stops the process rather
+than quietly falling back to the file: writing the operator's own work somewhere
+they did not ask for is worse than not starting.
 
 **Getting them.** A GitHub [personal access token](https://github.com/settings/tokens)
 needs read access to the repositories being watched — `repo` on a classic
@@ -174,6 +183,7 @@ Polylith, laid out one component per specification slice. It is plain
 |---|---|---|
 | `components/time` | UTC days, the collection window, the timesheet window, durations typed as text | — |
 | `components/db` | the two DataScript databases and the line between them | — |
+| `components/turso` | the durable half kept in a Turso table, as a DataScript storage | — |
 | `components/events` | the bus the surfaces are patched from | — |
 | `components/http` | a JSON client over `java.net.http` | — |
 | `components/access` | credentials, their four states, the GitHub budget | `shared/access` |
@@ -196,10 +206,19 @@ Polylith, laid out one component per specification slice. It is plain
 configuration and the worklog outlive the process, and everything gitdesk
 collects dies with it and is rebuilt by the collection that starts with the
 process. So `components/db` opens a `:durable` connection and a `:volatile`
-one. Both are DataScript, in memory. Give the store a file and the durable half
-is written there after every transaction and read back at startup — which is
-where a persistent engine goes when one arrives. Turso is that engine, and it
-is not wired yet.
+one. The volatile half is always in memory. The durable half is kept wherever
+it is told: a DataScript storage, a file of EDN, or nowhere.
+
+**Turso is a storage, not a rewrite.** DataScript keeps a database as a set of
+addressed nodes and asks its storage to write `[addr data]` pairs, read one
+address back, and — during a garbage collection — list and drop addresses. One
+`addr integer primary key, content text` table answers that, so
+`components/turso` is the HTTP protocol and nothing else: it knows about
+neither application, and `components/db` takes a storage without knowing what
+is behind it. A transaction writes through on its own, so nothing above has to
+remember to save. A stored database carries the schema it was stored with, so
+`db/open` re-initialises the datoms under the schema in force when that schema
+has moved on. A daily sweep drops the nodes the tree no longer references.
 
 **Virtual threads.** A collection cycle and a day scan each run on one virtual
 thread and block on every page they read. That is what lets the code read the
@@ -223,8 +242,10 @@ to log the time once. Every test runs against them, and so does `ODATO_DEMO=1`.
 
 ## What is not done
 
-- **Turso.** The persistent database is the file seam in `components/db` and
-  nothing more. Swapping it is one namespace.
+- **Turso against a real database.** The component is tested end to end —
+  DataScript stores and restores a database through its own HTTP client — but
+  against a Turso that answers from a map (`odato.fake-turso`), not against
+  turso.tech. Point `TURSO_URL` and `TURSO_TOKEN` at a real one to find out.
 - **Time logged outside this installation** is not read back, so a day's total
   is what this installation knows about rather than what Jira holds — the open
   question the specification parks in `worklog/worklog`.

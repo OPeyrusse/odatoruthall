@@ -19,10 +19,26 @@
 (def volatile-schema core/volatile-schema)
 
 (defn open
-  "Opens a store. `:file` persists the durable half as EDN; without it the
-  whole store is in memory and the configuration goes with the process."
+  "Opens a store.
+
+  The durable half is kept wherever it is told to be kept:
+
+    `:storage`  a `datascript.storage/IStorage` — `odato.turso.interface/storage`
+                is one — which DataScript writes through on every transaction
+    `:file`     a path; the durable half is written there as EDN after every
+                transaction and read back at startup
+    neither     nowhere: the whole store is in memory, and the configuration
+                and the worklog go with the process
+
+  The volatile half is always in memory, because the specification says the
+  snapshot dies with the process."
   ([] (open {}))
   ([opts] (core/open opts)))
+
+(defn backend
+  "Where the durable half is kept: `:storage`, `:file` or `:memory`."
+  [store]
+  (:backend store))
 
 (defn close! [store] (core/close! store))
 
@@ -70,3 +86,9 @@
   shutdown that wants to be sure."
   [store]
   (core/flush! store))
+
+(defn collect-garbage!
+  "Drops the stored nodes no live database references. A storage accumulates
+  them as the tree is rewritten; a file does not, being rewritten whole."
+  [store]
+  (core/collect-garbage! store))

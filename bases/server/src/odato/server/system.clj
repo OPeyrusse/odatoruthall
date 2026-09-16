@@ -17,7 +17,8 @@
             [odato.events.interface :as events]
             [odato.github.interface :as github]
             [odato.jira.interface :as jira]
-            [odato.time.interface :as t])
+            [odato.time.interface :as t]
+            [odato.turso.interface :as turso])
   (:import (java.util.concurrent Executors TimeUnit)))
 
 (defn- env
@@ -37,11 +38,35 @@
   {:port (parse-long (env "PORT" "7777"))
    :demo (demo?)
    :db-file (env "ODATO_DB_FILE")
+   :turso {:url (env "TURSO_URL")
+           :token (env "TURSO_TOKEN")
+           :table-name (env "TURSO_TABLE")}
    :github {:token (env "GITHUB_TOKEN")
             :base-url (env "GITHUB_API_URL" "https://api.github.com")}
    :jira {:base-url (env "JIRA_BASE_URL")
           :email (env "JIRA_EMAIL")
           :token (env "JIRA_TOKEN")}})
+
+(defn- store
+  "Where the durable half lives, in the order the operator asked for.
+
+  A Turso that is configured and cannot be reached stops the process rather
+  than quietly falling back to a file: the worklog is the operator's own work,
+  and writing it somewhere they did not ask for is worse than not starting."
+  [{:keys [turso db-file]}]
+  (cond
+    (turso/configured? turso)
+    (do (log/info "worklog: Turso," (:table-name (turso/options turso)) "table")
+        (db/open {:storage (turso/storage turso)}))
+
+    db-file
+    (do (log/info "worklog:" db-file)
+        (db/open {:file db-file}))
+
+    :else
+    (do (log/warn "worklog: in memory — it will go with the process."
+                  "Set TURSO_URL and TURSO_TOKEN, or ODATO_DB_FILE.")
+        (db/open {}))))
 
 (defn- clients [settings now-ms]
   (if (:demo settings)
@@ -70,8 +95,7 @@
   ([settings]
    (let [clock (t/system-clock)
          now (t/now-ms clock)
-         sys (merge {:store (db/open (when (:db-file settings)
-                                       {:file (:db-file settings)}))
+         sys (merge {:store (store settings)
                      :clock clock
                      :bus (events/bus)
                      :settings settings
@@ -106,6 +130,17 @@
                                            (catch Throwable e
                                              (log/warn e "the scheduler tick failed"))))
                           60 60 TimeUnit/SECONDS)
+    ;; A storage keeps every node it has ever been handed until somebody says
+    ;; otherwise: the tree is rewritten as it grows, and the old nodes are
+    ;; still there. Once a day is plenty for one operator's worklog, and a file
+    ;; store has none to collect.
+    (when (= :storage (db/backend (:store sys)))
+      (.scheduleAtFixedRate ^java.util.concurrent.ScheduledExecutorService (:scheduler sys)
+                            ^Runnable (fn []
+                                        (try (db/collect-garbage! (:store sys))
+                                             (catch Throwable e
+                                               (log/warn e "the storage could not be swept"))))
+                            24 24 TimeUnit/HOURS))
     sys))
 
 (defn stop! [sys]

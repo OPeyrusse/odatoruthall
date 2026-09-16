@@ -15,6 +15,7 @@
    {poly/time         {:local/root "components/time"}
     poly/events       {:local/root "components/events"}
     poly/db           {:local/root "components/db"}
+    poly/turso        {:local/root "components/turso"}
     poly/http         {:local/root "components/http"}
     poly/access       {:local/root "components/access"}
     poly/config       {:local/root "components/config"}
@@ -34,6 +35,7 @@
   {:extra-paths ["components/time/test"
                  "components/events/test"
                  "components/db/test"
+                 "components/turso/test"
                  "components/http/test"
                  "components/access/test"
                  "components/config/test"

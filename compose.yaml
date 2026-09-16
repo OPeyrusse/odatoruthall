@@ -23,6 +23,11 @@ services:
       JIRA_BASE_URL: "${JIRA_BASE_URL:-}"
       JIRA_EMAIL: "${JIRA_EMAIL:-}"
       JIRA_TOKEN: "${JIRA_TOKEN:-}"
+      # Turso, when it is configured, is where the worklog lives; the file and
+      # its volume below are what is used when it is not.
+      TURSO_URL: "${TURSO_URL:-}"
+      TURSO_TOKEN: "${TURSO_TOKEN:-}"
+      TURSO_TABLE: "${TURSO_TABLE:-odatoruthall}"
       ODATO_DB_FILE: /data/odatoruthall.edn
     volumes:
       - worklog:/data
