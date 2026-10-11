@@ -15,38 +15,53 @@
   (cond
     (or (not (access/usable? sys :github)) (not (access/usable? sys :jira)))
     :credential-unavailable
-    (core/scanning? sys) :already-scanning
     (not (worklog/within-window? sys day-starts-at)) :day-outside-window
     :else nil))
+
+(defn- claim-day!
+  "The refusal, or the id of a scan now running on the day. The day is taken
+  from the worklog, which holds it for one process at a time: a day being
+  scanned is not scanned again, and a day being submitted is not scanned."
+  [sys day-starts-at]
+  (or (refusal sys day-starts-at)
+      (let [taken (worklog/occupy-day! sys day-starts-at :scan)]
+        (if-not (:ok taken)
+          (case (:busy-with taken)
+            :submission :day-being-submitted
+            :already-scanning)
+          (let [scan-id (str (random-uuid))]
+            (db/transact! (core/volatile* sys)
+                          [{:scan/id scan-id
+                            :scan/day-starts-at day-starts-at
+                            :scan/status :running
+                            :scan/started-at (core/now sys)}])
+            {:scan-id scan-id})))))
 
 (defn request-scan!
   "ScanStarts / ScanNotStarted. Both services are scanned, so both credentials
   are needed: a scan with half the picture would look like a day with half the
-  work on it."
+  work on it. Other days' scans do not stand in the way; a scan of the same
+  day does, and so does the day being submitted."
   [sys day-starts-at]
-  (if-let [reason (refusal sys day-starts-at)]
-    (do (core/emit! sys {:type :scan/refused :day day-starts-at :reason reason})
-        {:started false :reason reason})
-    (let [scan-id (str (random-uuid))]
-      ;; The day has to exist before anything can be hung off it: a scan is one
-      ;; of the things that brings a day into being.
-      (worklog/ensure-day! sys day-starts-at)
-      (db/transact! (core/volatile* sys)
-                    [{:scan/id scan-id
-                      :scan/day-starts-at day-starts-at
-                      :scan/status :running
-                      :scan/started-at (core/now sys)}])
-      (doseq [[order {:keys [source service]}] (map-indexed vector core/sources)]
-        (db/transact! (core/volatile* sys)
-                      [{:scan-task/id (str scan-id "|" (name source))
-                        :scan-task/scan [:scan/id scan-id]
-                        :scan-task/source source
-                        :scan-task/service service
-                        :scan-task/status :queued
-                        :scan-task/order order
-                        :scan-task/found-count 0}]))
-      (core/emit! sys {:type :scan/started :day day-starts-at :scan scan-id})
-      {:started true :scan scan-id})))
+  (let [claim (claim-day! sys day-starts-at)]
+    (if (keyword? claim)
+      (do (core/emit! sys {:type :scan/refused :day day-starts-at :reason claim})
+          {:started false :reason claim})
+      (let [scan-id (:scan-id claim)]
+        ;; The day has to exist before anything can be hung off it: a scan is
+        ;; one of the things that brings a day into being.
+        (worklog/ensure-day! sys day-starts-at)
+        (doseq [[order {:keys [source service]}] (map-indexed vector core/sources)]
+          (db/transact! (core/volatile* sys)
+                        [{:scan-task/id (str scan-id "|" (name source))
+                          :scan-task/scan [:scan/id scan-id]
+                          :scan-task/source source
+                          :scan-task/service service
+                          :scan-task/status :queued
+                          :scan-task/order order
+                          :scan-task/found-count 0}]))
+        (core/emit! sys {:type :scan/started :day day-starts-at :scan scan-id})
+        {:started true :scan scan-id}))))
 
 ;; -------------------------------------------------------------- attribution
 
@@ -242,30 +257,43 @@
 
 ;; --------------------------------------------------------------- the whole scan
 
-(defn run-scan! [sys scan-id]
+(defn- scan-to-the-end! [sys scan-id day-starts-at]
+  (loop []
+    (if-let [task (next-task sys scan-id)]
+      (do (scan-source! sys scan-id day-starts-at (:scan-task/id task))
+          (recur))
+      (let [unread (read-jira-time! sys scan-id day-starts-at)
+            scan (core/last-scan sys day-starts-at)
+            orphans (count (core/orphans-on sys day-starts-at))]
+        (db/put! (core/volatile* sys) :scan/id scan-id
+                 {:scan/status :completed :scan/finished-at (core/now sys)})
+        ;; The day records when it was last scanned, whether or not the scan
+        ;; found anything: a day scanned and empty is a different thing from
+        ;; a day never scanned.
+        (worklog/mark-scanned! sys day-starts-at (core/now sys))
+        (core/emit! sys {:type :scan/completed
+                         :scan scan-id
+                         :day day-starts-at
+                         :failures (:failed scan)
+                         :unread unread
+                         :unattributed orphans})
+        {:scan scan-id :day day-starts-at :failures (:failed scan)
+         :unread unread :unattributed orphans}))))
+
+(defn run-scan!
+  "Runs a scan to its end, then hands the day back to the worklog. A scan
+  that blew up on the way ends too, rather than holding the day for good."
+  [sys scan-id]
   (let [day-starts-at (:scan/day-starts-at
                        (db/entity-map (db/db (core/volatile* sys)) :scan/id scan-id))]
-    (loop []
-      (if-let [task (next-task sys scan-id)]
-        (do (scan-source! sys scan-id day-starts-at (:scan-task/id task))
-            (recur))
-        (let [unread (read-jira-time! sys scan-id day-starts-at)
-              scan (core/last-scan sys day-starts-at)
-              orphans (count (core/orphans-on sys day-starts-at))]
+    (try
+      (scan-to-the-end! sys scan-id day-starts-at)
+      (finally
+        (when (= :running (:scan/status (db/entity-map (db/db (core/volatile* sys))
+                                                       :scan/id scan-id)))
           (db/put! (core/volatile* sys) :scan/id scan-id
-                   {:scan/status :completed :scan/finished-at (core/now sys)})
-          ;; The day records when it was last scanned, whether or not the scan
-          ;; found anything: a day scanned and empty is a different thing from
-          ;; a day never scanned.
-          (worklog/mark-scanned! sys day-starts-at (core/now sys))
-          (core/emit! sys {:type :scan/completed
-                           :scan scan-id
-                           :day day-starts-at
-                           :failures (:failed scan)
-                           :unread unread
-                           :unattributed orphans})
-          {:scan scan-id :day day-starts-at :failures (:failed scan)
-           :unread unread :unattributed orphans})))))
+                   {:scan/status :completed :scan/finished-at (core/now sys)}))
+        (worklog/release-day! sys day-starts-at :scan)))))
 
 (defn scan! [sys day-starts-at]
   (let [outcome (request-scan! sys day-starts-at)]

@@ -159,13 +159,38 @@
         (odato.access.interface/check-connection!
          half :github #(github/whoami (:github half)))
         (is (= :credential-unavailable (:reason (discovery/request-scan! half today))))))
-    (testing "a scan asked for while one is running is refused"
-      (let [first-scan (discovery/request-scan! sys today)]
+    (testing "several days are scanned side by side"
+      (let [first-scan (discovery/request-scan! sys today)
+            second-scan (discovery/request-scan! sys yesterday)]
         (is (:started first-scan))
-        (is (= :already-scanning (:reason (discovery/request-scan! sys yesterday))))
-        (discovery/run-scan! sys (:scan first-scan))))
+        (is (:started second-scan) "another day's scan does not stand in the way")
+        (is (= [today yesterday] (map :day-starts-at (discovery/active-scans sys))))
+        (is (discovery/scanning? sys yesterday))
+        (testing "but a day already being scanned is refused"
+          (is (= :already-scanning (:reason (discovery/request-scan! sys today))))
+          (is (= 2 (count (discovery/active-scans sys))) "and the running one carries on"))
+        (discovery/run-scan! sys (:scan second-scan))
+        (is (not (discovery/scanning? sys yesterday)) "a finished scan stops showing")
+        (is (= (:scan first-scan) (:id (discovery/active-scan sys today))))
+        (discovery/run-scan! sys (:scan first-scan))
+        (is (not (discovery/scanning? sys)))))
     (testing "and a day outside the window is not scanned"
       (is (= :day-outside-window (:reason (discovery/request-scan! sys long-ago)))))))
+
+(deftest a-day-is-scanned-or-submitted-never-both
+  (let [sys (installation)]
+    (testing "a day being submitted is not scanned"
+      (worklog/occupy-day! sys today :submission)
+      (is (= :day-being-submitted (:reason (discovery/request-scan! sys today))))
+      (is (empty? (discovery/active-scans sys)))
+      (worklog/release-day! sys today :submission))
+    (testing "a day being scanned is not submitted"
+      (let [scan (discovery/request-scan! sys today)]
+        (is (= :scan (worklog/busy-with sys today)))
+        (is (= :day-being-scanned (:fault (worklog/submit-day! sys today))))
+        (discovery/run-scan! sys (:scan scan))
+        (is (nil? (worklog/busy-with sys today))
+            "and the day is free again once the scan ends")))))
 
 (deftest sources-take-their-turn-one-at-a-time
   (let [sys (installation)]

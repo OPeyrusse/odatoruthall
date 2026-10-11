@@ -19,13 +19,17 @@
     * a scan only ever adds — it never removes a task or an activity from a
       day, never records the same activity twice, and never touches the time
       the operator entered and has not sent, nor the time on its way to Jira;
-    * a scan is asked for, one day at a time. Nothing scans on a schedule."
+    * a scan is asked for, one day at a time. Nothing scans on a schedule.
+
+  Several days can be scanned side by side; one day is scanned once at a
+  time."
   (:require [odato.discovery.core :as core]
             [odato.discovery.scan :as scan]))
 
 (defn request-scan!
   "ScanRequested. `{:started true :scan <id>}`, or
-  `{:started false :reason :credential-unavailable|:already-scanning|:day-outside-window}`."
+  `{:started false :reason :credential-unavailable|:day-outside-window|:already-scanning|:day-being-submitted}`.
+  A day is scanned or submitted, never both at once."
   [sys day-starts-at]
   (scan/request-scan! sys day-starts-at))
 
@@ -73,9 +77,21 @@
 
 (defn activity [sys activity-id] (core/activity sys activity-id))
 
-(defn active-scans [sys] (core/active-scans sys))
+(defn active-scans
+  "Every running scan, oldest first, each saying whether it is waiting on the
+  GitHub budget."
+  [sys]
+  (core/active-scans sys))
 
-(defn scanning? [sys] (core/scanning? sys))
+(defn active-scan
+  "The scan running on that day, if one is."
+  [sys day-starts-at]
+  (core/active-scan sys day-starts-at))
+
+(defn scanning?
+  "Whether any scan runs — or, given a day, whether that day is being scanned."
+  ([sys] (core/scanning? sys))
+  ([sys day-starts-at] (core/scanning? sys day-starts-at)))
 
 (defn last-scan
   "The most recent scan of a day, with what it found and what did not answer."

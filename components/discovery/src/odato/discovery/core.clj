@@ -1,5 +1,6 @@
 (ns odato.discovery.core
-  (:require [odato.db.interface :as db]
+  (:require [odato.access.interface :as access]
+            [odato.db.interface :as db]
             [odato.events.interface :as events]
             [odato.github.interface :as github]
             [odato.jira.interface :as jira]
@@ -99,10 +100,32 @@
   (let [d (db/db (volatile* sys))]
     (mapv #(->scan d %) (db/all d :scan/id))))
 
-(defn active-scans [sys]
-  (filterv #(= :running (:status %)) (scans sys)))
+(defn- waiting-on-quota?
+  "Running, holding a GitHub source, and the budget spent: the scan is not
+  stuck, it is waiting for the budget to come back."
+  [sys scan]
+  (boolean (and (not (access/budget-available? sys))
+                (some #(and (= :scanning (:status %)) (= :github (:service %)))
+                      (:tasks scan)))))
 
-(defn scanning? [sys] (pos? (count (active-scans sys))))
+(defn active-scans
+  "Every running scan, oldest first. Several days are scanned side by side."
+  [sys]
+  (->> (scans sys)
+       (filter #(= :running (:status %)))
+       (sort-by #(or (:started-at %) 0))
+       (mapv #(assoc % :waiting-on-quota? (waiting-on-quota? sys %)))))
+
+(defn active-scan
+  "The scan running on that day, if any: a day is scanned once at a time."
+  [sys day-starts-at]
+  (->> (active-scans sys)
+       (filter #(= (long day-starts-at) (long (or (:day-starts-at %) -1))))
+       first))
+
+(defn scanning?
+  ([sys] (pos? (count (active-scans sys))))
+  ([sys day-starts-at] (some? (active-scan sys day-starts-at))))
 
 (defn last-scan [sys day-starts-at]
   (->> (scans sys)

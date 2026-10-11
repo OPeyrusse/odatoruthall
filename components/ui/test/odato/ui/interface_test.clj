@@ -3,6 +3,7 @@
             [clojure.test :refer [deftest is testing]]
             [odato.collector.interface :as collector]
             [odato.config.interface :as config]
+            [odato.discovery.interface :as discovery]
             [odato.fixtures :as fix]
             [odato.testing :as testing*]
             [odato.time.interface :as t]
@@ -189,3 +190,49 @@
                                   {:logged-ms (t/hours 2) :worklogs 2 :worklog nil})
       (is (str/includes? (ui/day-fragment sys (worklog/day sys day-starts-at))
                          "in Jira · 2 worklogs")))))
+
+(def ^:private greyed-in-card
+  "A ticket's key on the timesheet, while its day is scanned."
+  "font-medium text-slate-600 dark:text-slate-400")
+
+(def ^:private greyed-on-day
+  "A ticket's key on its day, while the day is scanned."
+  "font-semibold text-slate-600 dark:text-slate-400")
+
+(deftest a-day-being-scanned-says-so
+  (let [sys (installation)
+        [first-day second-day] (map :starts-at (take-last 2 (worklog/window sys)))
+        _ (worklog/name-task! sys second-day "ABC-1")
+        first-scan (:scan (discovery/request-scan! sys first-day))
+        second-scan (:scan (discovery/request-scan! sys second-day))]
+    (testing "the timesheet lists every scan in flight"
+      (let [body (ui/worklog-fragment sys)]
+        (is (str/includes? body "Scanning"))
+        (is (str/includes? body (t/day-label first-day)))
+        (is (str/includes? body (str "href=\"/worklog/" (t/format-day second-day) "\"")))
+        (is (str/includes? body greyed-in-card) "and greys the days being scanned")))
+    (testing "the day being scanned says so, glows, and cannot be asked for again"
+      (let [body (ui/day-fragment sys (worklog/day sys second-day))]
+        (is (str/includes? body "scan-glow"))
+        (is (str/includes? body "scanning 0/7"))
+        (is (= 2 (count (re-seq #"disabled=\"disabled\" title=\"This day is being scanned\"" body)))
+            "neither scanned again nor submitted")
+        (is (str/includes? body greyed-on-day))
+        (is (str/includes? body "text-slate-600 shadow-sm") "and so is the time")))
+    (testing "and stops saying so once the scan ends"
+      (discovery/run-scan! sys second-scan)
+      (let [body (ui/day-fragment sys (worklog/day sys second-day))]
+        (is (not (str/includes? body "scan-glow")))
+        (is (not (str/includes? body "This day is being scanned")))
+        (is (not (str/includes? body greyed-on-day))))
+      (is (str/includes? (ui/worklog-fragment sys) "Scanning")
+          "while the other day's scan is still listed")
+      (discovery/run-scan! sys first-scan)
+      (is (not (str/includes? (ui/worklog-fragment sys) "Scanning"))))))
+
+(deftest every-page-carries-the-theme-switch
+  (let [body (ui/worklog-page (installation))]
+    (is (str/includes? body "window.odatoTheme")
+        "the pick is put back in the head, before anything is painted")
+    (doseq [stop ["light" "system" "dark"]]
+      (is (str/includes? body (str "data-stop=\"" stop "\""))))))

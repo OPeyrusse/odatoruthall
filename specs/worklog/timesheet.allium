@@ -58,6 +58,8 @@ surface Timesheet {
             day.is_settled
             day.has_been_scanned
             day.last_scanned_at
+            (discovery/DayScans where day = day and status = running).count
+            day.busy_with
             -- One row per task, and one time field on it, whatever the day
             -- turned up under it.
             for entry in by_task(day.entries):
@@ -132,6 +134,7 @@ surface DaySheet {
 
     let scans = discovery/DayScans where day = day
     let last_scan = most_recent(scans)
+    let running = scans where status = running
     let lines = discovery/DiscoveredActivities where day = day
     let orphans = lines where is_orphan
 
@@ -147,6 +150,7 @@ surface DaySheet {
         day.acknowledged_entries.count
         day.rejected_entries.count
         day.last_scanned_at
+        day.busy_with
         -- One group per task: the ticket, the single time field, and the
         -- lines that led to it.
         for entry in by_task(day.entries):
@@ -171,6 +175,12 @@ surface DaySheet {
                 line.reference
                 line.title
                 line.named_keys
+        running.count
+        for scan in running:
+            scan.started_at
+            scan.is_waiting_on_quota
+            scan.tasks.count
+            scan.queued_tasks.count
         last_scan.finished_at
         last_scan.failed_tasks.count
         last_scan.failed_readings.count
@@ -197,6 +207,17 @@ surface DaySheet {
     -- the way to the scan in flight and stays.
     related:
         discovery/DayScanStatus
+
+    @guarantee AScanInFlightShows
+        -- While the day is being scanned, the day says so -- how far the
+        -- scan has gone, and whether it is waiting on the GitHub budget --
+        -- and its tickets and their time read as not yet final. Once the
+        -- scan ends, the day stops saying so without being reloaded.
+
+    @guarantee ADayDoesOneThingAtATime
+        -- While the day is being scanned or submitted, neither can be asked
+        -- for on it: both commands wait, and say what the day is busy with,
+        -- until it is free again.
 
     @guarantee ScannedWorkIsOnlyASuggestion
         -- What a scan found is a task on the day with no time on it. The

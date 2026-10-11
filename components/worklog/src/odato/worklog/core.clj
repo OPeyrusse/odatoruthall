@@ -10,12 +10,58 @@
    :max-entry-duration-ms (t/hours 24)})
 
 (defn conn [sys] (db/durable (:store sys)))
+(defn- volatile* [sys] (db/volatile* (:store sys)))
 (defn now [sys] (t/now-ms (:clock sys)))
 (defn emit! [sys event] (events/publish! (:bus sys) event))
 
 (defn within-window? [sys day-starts-at]
   (and day-starts-at
        (t/within-timesheet-window? day-starts-at (now sys) (:timesheet-days config))))
+
+;; ------------------------------------------------------- what a day is busy with
+
+;; A day is scanned or submitted, never both at once and neither twice: a scan
+;; would read back time a submission is still writing, and a submission would
+;; send entries a scan is still adding to. Which one holds the day dies with
+;; the process, like the scans themselves.
+
+(defonce ^:private occupancy
+  ;; Looking and taking are one step: two processes arriving together must not
+  ;; both find the day free.
+  (Object.))
+
+(defn busy-with
+  "`:scan`, `:submission`, or nil when the day is free."
+  [sys day-starts-at]
+  (:day-process/kind
+   (db/entity-map (db/db (volatile* sys)) :day-process/starts-at day-starts-at)))
+
+(defn occupy!
+  "Takes the day for `process`. `{:ok true}`, or `{:ok false :busy-with p}`."
+  [sys day-starts-at process]
+  (let [outcome (locking occupancy
+                  (if-let [holder (busy-with sys day-starts-at)]
+                    {:ok false :busy-with holder}
+                    (do (db/transact! (volatile* sys)
+                                      [{:day-process/starts-at day-starts-at
+                                        :day-process/kind process}])
+                        {:ok true})))]
+    (when (:ok outcome)
+      (emit! sys {:type :worklog/day-busy :day day-starts-at :process process}))
+    outcome))
+
+(defn release!
+  "Frees the day, if `process` is what holds it."
+  [sys day-starts-at process]
+  (let [released (locking occupancy
+                   (when-let [eid (db/lookup (db/db (volatile* sys))
+                                             :day-process/starts-at day-starts-at)]
+                     (when (= process (busy-with sys day-starts-at))
+                       (db/transact! (volatile* sys) [[:db/retractEntity eid]])
+                       true)))]
+    (when released
+      (emit! sys {:type :worklog/day-free :day day-starts-at :process process}))
+    nil))
 
 ;; ------------------------------------------------------------------ reading
 
@@ -103,7 +149,8 @@
      :rejected-count (count (filter #(= :rejected (:status %)) entries))
      :has-time-to-submit (boolean (some :pending-submission? entries))
      :is-in-flight (boolean (some :in-flight? entries))
-     :is-settled (and (pos? (count filled)) (= (count acknowledged) (count filled)))}))
+     :is-settled (and (pos? (count filled)) (= (count acknowledged) (count filled)))
+     :busy-with (busy-with sys day-starts-at)}))
 
 (defn ensure-day! [sys day-starts-at]
   (when-not (db/lookup (db/db (conn sys)) :work-day/starts-at day-starts-at)
