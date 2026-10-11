@@ -73,6 +73,26 @@
      :assigned (filterv #(prs/assigned-to? % operator) open)
      :addressed (filterv #(prs/addressed-for? % operator) open)}))
 
+(def my-work-groups
+  "The four groups of the operator's own business, in the order the dashboard
+  shows them. The slug names the page dedicated to each one."
+  [{:group :authored :slug "authored" :label "authored" :title "Authored"
+    :empty "Nothing you wrote is in flight."}
+   {:group :to-review :slug "to-review" :label "to review" :title "To review"
+    :empty "Nobody is waiting on your review."}
+   {:group :assigned :slug "assigned" :label "assigned" :title "Assigned"
+    :empty "Nothing is assigned to you."}
+   {:group :addressed :slug "addressed" :label "addressed" :title "Addressed"
+    :empty "Nothing has come back to you."}])
+
+(defn my-work-group
+  "The group a page slug names, or nil."
+  [slug]
+  (first (filter #(= slug (:slug %)) my-work-groups)))
+
+(defn- my-work-href [{:keys [slug]}]
+  (str "/gitdesk/my/" slug))
+
 (defn- monitoring
   "The pull requests worth a second look: open too long, argued over, reworked
   too often, or approved and going nowhere."
@@ -182,6 +202,68 @@
            (count (filter #(prs/assigned-to? % member) pull-requests))]])]]
      (parts/empty-state "No members are tracked yet."))])
 
+;; ---------------------------------------------------------------- my work
+
+(def ^:private summary-item
+  (str "group flex flex-col items-center gap-1 rounded-lg px-3 py-3 transition "
+       "hover:bg-slate-100 dark:hover:bg-slate-800/60"))
+
+(def ^:private summary-label
+  (str "flex items-center gap-1.5 text-xs font-medium uppercase tracking-widest "
+       "text-slate-500 dark:text-slate-400"))
+
+(def ^:private summary-count
+  (str "text-4xl font-semibold tabular-nums text-slate-900 group-hover:text-sky-600 "
+       "dark:text-slate-100 dark:group-hover:text-sky-400"))
+
+(defn- my-work-summary
+  "The four counts of the operator's own business. Each one leads to the page
+  that lists its pull requests."
+  [mine]
+  [:section {:class parts/card :id "my-work"}
+   [:div {:class "flex flex-col gap-2 px-4 pt-4 pb-3"}
+    [:h2 {:class "text-2xl font-semibold tracking-tight"} "My work"]
+    [:div {:class "grid grid-cols-2 gap-2 sm:grid-cols-4"}
+     (for [{:keys [group label] :as g} my-work-groups]
+       [:a {:href (my-work-href g) :class summary-item
+            :title (str "The pull requests " label)}
+        [:span {:class summary-label}
+         label
+         [:span {:class "text-emerald-500" :aria-hidden "true"} "▶"]]
+        [:span {:class summary-count} (str (count (get mine group)))]])]]])
+
+(defn my-work-page
+  "One group of the operator's own business, in full: every pull request in
+  it, most recent activity first, drafts only when the operator asked for
+  them."
+  [sys {:keys [group title empty]}]
+  (let [now-ms (t/now-ms (:clock sys))
+        operator (access/operator-login sys)
+        members (get (my-work operator (collector/pull-requests sys)) group)
+        shown (listed members)
+        hidden (- (count members) (count shown))]
+    [:div {:id "gitdesk-my-work" :class "flex flex-col gap-4"}
+     [:section {:class parts/card}
+      [:div {:class "flex flex-col gap-1 px-4 py-4"}
+       [:a {:href "/gitdesk" :class (str parts/muted " w-fit hover:underline")}
+        "← gitdesk"]
+       [:h1 {:class "text-2xl font-semibold tracking-tight"} title]
+       [:p {:class parts/muted}
+        (str (count members) " pull request" (when (not= 1 (count members)) "s"))
+        (when (pos? hidden)
+          [:span {:class "italic"}
+           (str " (" hidden " draft" (when (< 1 hidden) "s")
+                " hidden — show them in settings)")])]]
+      (if (seq shown)
+        [:ul {:class "divide-y divide-slate-200 border-t border-slate-200 dark:divide-slate-800 dark:border-slate-800"}
+         (map #(pr-row now-ms %) shown)]
+        [:div {:class "border-t border-slate-200 dark:border-slate-800"}
+         (parts/empty-state
+          (cond
+            (not operator) "No valid GitHub credential, so there is no \"me\" yet."
+            (pos? hidden) "Only drafts here, and drafts are hidden."
+            :else empty))])]]))
+
 ;; ------------------------------------------------------------------ the body
 
 (defn body
@@ -197,12 +279,7 @@
     [:div {:id "gitdesk" :class "flex flex-col gap-4"}
      (collection-status sys now-ms)
 
-     (parts/stat-group
-      "My work"
-      [{:label "authored" :count (count (:authored mine)) :tone :sky}
-       {:label "to review" :count (count (:to-review mine)) :tone :violet}
-       {:label "assigned" :count (count (:assigned mine)) :tone :neutral}
-       {:label "addressed" :count (count (:addressed mine)) :tone :amber}])
+     (my-work-summary mine)
 
      (parts/stat-group
       "Monitoring"

@@ -71,6 +71,23 @@
       (config/save! sys (assoc (config/current sys) :show-drafts true))
       (is (str/includes? (ui/gitdesk-fragment sys) "A sketch")))))
 
+(deftest a-group-of-my-work-counts-its-drafts-and-hides-them
+  (let [sys (installation)
+        authored (ui/my-work-group "authored")]
+    (collector/collect! sys :manual)
+    (let [body (ui/my-work-fragment sys authored)]
+      (is (str/includes? body "id=\"gitdesk-my-work\""))
+      (is (str/includes? body "2 pull requests"))
+      (is (str/includes? body "Ship it"))
+      (is (not (str/includes? body "A sketch")) "the draft is not listed")
+      (is (str/includes? body "1 draft hidden")))
+    (testing "until the operator asks for them"
+      (config/save! sys (assoc (config/current sys) :show-drafts true))
+      (let [body (ui/my-work-fragment sys authored)]
+        (is (str/includes? body "A sketch"))
+        (is (not (str/includes? body "hidden")))))
+    (is (nil? (ui/my-work-group "starred")))))
+
 (deftest the-settings-form-reads-back-what-is-in-force
   (let [sys (installation)
         body (ui/settings-page sys)]

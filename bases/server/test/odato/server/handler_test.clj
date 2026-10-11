@@ -85,6 +85,20 @@
       (is (str/includes? (:body response) "Ship it")))
     (is (= 404 (:status (GET sys "/gitdesk/pull-request/acme/widget/99"))))))
 
+(deftest each-group-of-my-work-has-its-page
+  (let [sys (installation)]
+    (collector/collect! sys :manual)
+    (testing "the dashboard count leads to it"
+      (is (str/includes? (:body (GET sys "/gitdesk")) "href=\"/gitdesk/my/authored\"")))
+    (let [response (GET sys "/gitdesk/my/authored")]
+      (is (= 200 (:status response)))
+      (is (str/includes? (:body response) "Ship it"))
+      (is (str/includes? (:body response) "/sse/gitdesk/my/authored")))
+    (testing "a group with nothing in it says so"
+      (is (str/includes? (:body (GET sys "/gitdesk/my/to-review"))
+                         "Nobody is waiting on your review.")))
+    (is (= 404 (:status (GET sys "/gitdesk/my/starred"))))))
+
 (deftest settings-are-saved-and-a-refusal-says-why
   (let [sys (installation)
         form (str "repositories=acme%2Fwidget&members=ada&cadence-minutes=30"

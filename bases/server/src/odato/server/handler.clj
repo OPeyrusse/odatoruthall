@@ -106,6 +106,21 @@
 
       ;; Anything with a variable in it.
       (cond
+        ;; /gitdesk/my/:group
+        (and (= :get request-method) (= 3 (count segments))
+             (= ["gitdesk" "my"] (subvec segments 0 2)))
+        (if-let [group (ui/my-work-group (nth segments 2))]
+          (html (ui/my-work-page sys group))
+          (not-found sys "No such group of your work."))
+
+        ;; /sse/gitdesk/my/:group
+        (and (= :get request-method) (= 4 (count segments))
+             (= ["sse" "gitdesk" "my"] (subvec segments 0 3)))
+        (if-let [group (ui/my-work-group (nth segments 3))]
+          (sse/stream sys request {:relevant? sse/gitdesk-event?
+                                   :fragment-fn #(ui/my-work-fragment % group)})
+          (not-found sys "No such group of your work."))
+
         ;; /gitdesk/pull-request/:owner/:name/:number
         (and (= :get request-method)
              (= 5 (count segments))
