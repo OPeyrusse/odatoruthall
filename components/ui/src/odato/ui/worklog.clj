@@ -57,7 +57,7 @@
 (def ^:private in-flight-tasks
   "A day being scanned is not final yet: its tickets read a shade lighter until
   the scan ends."
-  "text-slate-700 dark:text-slate-400")
+  "text-slate-600 dark:text-slate-400")
 
 (defn- scan-progress
   "How far a running scan has gone: the sources done out of all of them."

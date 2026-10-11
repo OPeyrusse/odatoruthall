@@ -155,7 +155,7 @@
 
 (def ^:private greyed
   "The end of the class a list of tickets carries while its day is scanned."
-  "text-slate-700 dark:text-slate-400\"")
+  "text-slate-600 dark:text-slate-400\"")
 
 (deftest a-day-being-scanned-says-so
   (let [sys (installation)
