@@ -52,12 +52,25 @@
            class (assoc :class class))
    content])
 
-;; ------------------------------------------------------------- a scan in flight
+;; ------------------------------------------------------------- a day at work
 
-(def ^:private in-flight-tasks
-  "A day being scanned is not final yet: its tickets read a shade lighter until
-  the scan ends."
+;; A day is scanned or submitted, never both at once and neither twice: while
+;; one runs, the day's commands wait for it.
+
+(def ^:private in-flight-text
+  "A day being scanned is not final yet: its tickets and their time read a
+  shade lighter until the scan ends."
   "text-slate-600 dark:text-slate-400")
+
+(def ^:private in-flight-input
+  "The time field, in the same shade."
+  (-> parts/input
+      (str/replace "text-slate-900 " "text-slate-600 ")
+      (str/replace "dark:text-slate-100" "dark:text-slate-400")))
+
+(def ^:private busy-title
+  {:scan "This day is being scanned"
+   :submission "This day is being submitted to Jira"})
 
 (defn- scan-progress
   "How far a running scan has gone: the sources done out of all of them."
@@ -72,13 +85,27 @@
               (if (:waiting-on-quota? scan) :amber :sky)))
 
 (defn- scan-button
-  "The scan command; a day already being scanned cannot be asked for again."
-  [day scanning label]
+  "The scan command, waiting while the day is scanned or submitted."
+  [day label]
   (command-form {:action (str (day-href day) "/scan")}
                 [:button {:class parts/button :type "submit"
-                          :disabled (some? scanning)
-                          :title (when scanning "This day is being scanned")}
+                          :disabled (some? (:busy-with day))
+                          :title (busy-title (:busy-with day))}
                  label]))
+
+(defn- submit-button
+  "The submit command: there must be time to send, and the day must not be
+  busy being scanned or submitted already."
+  [day]
+  (command-form {:action (str (day-href day) "/submit")}
+                [:button {:class (if (and (:has-time-to-submit day) (not (:busy-with day)))
+                                   parts/primary-button
+                                   parts/button)
+                          :type "submit"
+                          :disabled (or (not (:has-time-to-submit day))
+                                        (some? (:busy-with day)))
+                          :title (busy-title (:busy-with day))}
+                 "Submit to Jira"]))
 
 ;; ------------------------------------------------------------- the five days
 
@@ -101,29 +128,24 @@
         (t/format-duration (:total-logged day))]
        (when (:is-settled day) (parts/chip "settled" :green))]]
      (if (seq (:entries day))
-       [:ul {:class (str "divide-y divide-slate-200 text-sm dark:divide-slate-800"
-                         (when scanning (str " " in-flight-tasks)))}
+       [:ul {:class "divide-y divide-slate-200 text-sm dark:divide-slate-800"}
         (for [entry (:entries day)]
           [:li {:class "flex items-center justify-between gap-2 px-4 py-2"}
            [:div {:class "min-w-0"}
-            [:div {:class "font-medium"} (:work-item-key entry)]
+            [:div {:class (str "font-medium" (when scanning (str " " in-flight-text)))}
+             (:work-item-key entry)]
             [:div {:class (str parts/muted " truncate")}
              (get-in entry [:work-item :summary])]]
            [:div {:class "flex shrink-0 items-center gap-2"}
-            [:span {:class "tabular-nums"} (or (:entered-text entry) "—")]
+            [:span {:class (str "tabular-nums" (when scanning (str " " in-flight-text)))}
+             (or (:entered-text entry) "—")]
             (status-chip entry)]])]
        (parts/empty-state (if (:has-been-scanned day)
                             "Scanned, and nothing was found."
                             "Nothing on this day yet.")))
      [:div {:class day-actions}
-      (scan-button day scanning "Scan")
-      (command-form {:action (str (day-href day) "/submit")}
-                    [:button {:class (if (:has-time-to-submit day)
-                                       parts/primary-button
-                                       parts/button)
-                              :type "submit"
-                              :disabled (not (:has-time-to-submit day))}
-                     "Submit to Jira"])
+      (scan-button day "Scan")
+      (submit-button day)
       (when (pos? (count orphans))
         [:a {:href (day-href day)} (parts/chip (str (count orphans) " loose") :amber)])
       (when (:has-been-scanned day)
@@ -181,17 +203,18 @@
 (defn- task-block
   "One group per task: the ticket, the single time field, and the lines that
   led to it."
-  [sys now-ms day entry]
-  (let [lines (discovery/lines-for sys (:starts-at day) (:work-item-key entry))]
+  [sys now-ms day scanning entry]
+  (let [lines (discovery/lines-for sys (:starts-at day) (:work-item-key entry))
+        key-class (str "font-semibold" (when scanning (str " " in-flight-text)))]
     [:li {:class "px-4 py-3"}
      [:div {:class "flex flex-wrap items-start justify-between gap-3"}
       [:div {:class "min-w-0"}
        [:div {:class "flex flex-wrap items-center gap-2"}
         (if-let [url (get-in entry [:work-item :url])]
           [:a {:href url :target "_blank" :rel "noreferrer"
-               :class "font-semibold hover:underline"}
+               :class (str key-class " hover:underline")}
            (:work-item-key entry)]
-          [:span {:class "font-semibold"} (:work-item-key entry)])
+          [:span {:class key-class} (:work-item-key entry)])
         (parts/chip (or (get-in entry [:work-item :status]) "unknown") :neutral)
         (when (= :discovered (:origin entry)) (parts/chip "found by a scan" :sky))
         (status-chip entry)]
@@ -201,7 +224,8 @@
        (command-form
         {:action (str "/worklog/entries/" (:id entry) "/time")
          :class "flex items-center gap-2"}
-        [:input {:class (str parts/input " w-28 text-right tabular-nums")
+        [:input {:class (str (if scanning in-flight-input parts/input)
+                             " w-28 text-right tabular-nums")
                  :type "text" :name "text" :placeholder "1h 30m"
                  :value (or (:entered-text entry) "")
                  :disabled (not (:editable? entry))
@@ -275,7 +299,9 @@
         [:a {:href "/worklog" :class (str parts/muted " hover:underline")} "← timesheet"]
         [:div {:class "flex flex-wrap items-center gap-2"}
          [:h1 {:class "text-xl font-semibold"} (t/day-label (:starts-at day))]
-         (when scanning (scan-chip "scanning" scanning))]
+         (when scanning (scan-chip "scanning" scanning))
+         (when (= :submission (:busy-with day))
+           (parts/chip "submitting to Jira" :violet))]
         [:p {:class parts/muted}
          (list (str (:acknowledged-count day) " in Jira · "
                     (:drafted-count day) " drafted · "
@@ -290,14 +316,8 @@
           (t/format-duration (:total-logged day))]
          [:div {:class "text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400"}
           "logged"]]
-        (scan-button day scanning "Scan this day")
-        (command-form {:action (str (day-href day) "/submit")}
-                      [:button {:class (if (:has-time-to-submit day)
-                                         parts/primary-button
-                                         parts/button)
-                                :type "submit"
-                                :disabled (not (:has-time-to-submit day))}
-                       "Submit to Jira"])]]
+        (scan-button day "Scan this day")
+        (submit-button day)]]
       ;; What the last scan missed is only known once it has ended.
       (when (and last-scan (not scanning) (pos? (:failed last-scan)))
         [:p {:class partial-notice}
@@ -321,9 +341,8 @@
                               :aria-label "issue key"}]
                      [:button {:class parts/button :type "submit"} "Add task"])]
       (if (seq (:entries day))
-        [:ul {:class (str "divide-y divide-slate-200 dark:divide-slate-800"
-                          (when scanning (str " " in-flight-tasks)))}
-         (map #(task-block sys now-ms day %) (:entries day))]
+        [:ul {:class "divide-y divide-slate-200 dark:divide-slate-800"}
+         (map #(task-block sys now-ms day scanning %) (:entries day))]
         (parts/empty-state
          "No tasks on this day. Name one, or scan the day to find them."))]
 

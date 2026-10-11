@@ -28,7 +28,8 @@
 
 (defn request-scan!
   "ScanRequested. `{:started true :scan <id>}`, or
-  `{:started false :reason :credential-unavailable|:already-scanning|:day-outside-window}`."
+  `{:started false :reason :credential-unavailable|:day-outside-window|:already-scanning|:day-being-submitted}`.
+  A day is scanned or submitted, never both at once."
   [sys day-starts-at]
   (scan/request-scan! sys day-starts-at))
 

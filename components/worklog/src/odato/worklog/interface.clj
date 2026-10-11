@@ -123,7 +123,26 @@
   "OperatorSubmitsDay. Only what Jira does not already hold is sent; an entry
   Jira holds is updated under the same worklog, never added a second time.
 
+  A day is scanned or submitted, never both at once: a day being scanned, or
+  already being submitted, is not submitted.
+
   `{:ok true :submitted n :acknowledged n :rejected n}` or
-  `{:ok false :fault :credential-unavailable|:nothing-to-submit}`."
+  `{:ok false :fault :credential-unavailable|:day-being-scanned|:already-submitting|:nothing-to-submit}`."
   [sys day-starts-at]
   (submit/submit-day! sys day-starts-at))
+
+(defn busy-with
+  "What holds the day: `:scan`, `:submission`, or nil when it is free."
+  [sys day-starts-at]
+  (core/busy-with sys day-starts-at))
+
+(defn occupy-day!
+  "Takes the day for `process` (`:scan` or `:submission`), so that nothing
+  else does. `{:ok true}`, or `{:ok false :busy-with p}`."
+  [sys day-starts-at process]
+  (core/occupy! sys day-starts-at process))
+
+(defn release-day!
+  "Frees the day, if `process` is what holds it."
+  [sys day-starts-at process]
+  (core/release! sys day-starts-at process))

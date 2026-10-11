@@ -46,28 +46,35 @@
   sent: entries acknowledged and untouched since are left alone, and an entry
   with no time on it is not a worklog."
   [sys day-starts-at]
-  (let [d (core/day sys day-starts-at)
-        pending (filterv :pending-submission? (:entries d))]
-    (cond
-      (not (access/usable? sys :jira))
-      (do (core/emit! sys {:type :worklog/day-submission-refused :day day-starts-at
-                           :failure :credential-unavailable})
-          {:ok false :fault :credential-unavailable})
-
-      (empty? pending)
-      (do (core/emit! sys {:type :worklog/nothing-to-submit :day day-starts-at})
-          {:ok false :fault :nothing-to-submit})
-
-      :else
-      (let [outcomes (mapv #(submit-entry! sys %) pending)
-            counted (frequencies outcomes)]
-        (core/emit! sys {:type :worklog/day-submitted :day day-starts-at
-                         :acknowledged (get counted :acknowledged 0)
-                         :rejected (get counted :rejected 0)})
-        {:ok true
-         :submitted (count pending)
-         :acknowledged (get counted :acknowledged 0)
-         :rejected (get counted :rejected 0)}))))
+  (let [refused (fn [fault]
+                  (core/emit! sys {:type :worklog/day-submission-refused
+                                   :day day-starts-at :failure fault})
+                  {:ok false :fault fault})]
+    (if-not (access/usable? sys :jira)
+      (refused :credential-unavailable)
+      ;; The day is held for the whole submission, so that no scan starts on
+      ;; it, and no second submission, until Jira has answered for every entry.
+      (let [taken (core/occupy! sys day-starts-at :submission)]
+        (if-not (:ok taken)
+          (refused (case (:busy-with taken)
+                     :scan :day-being-scanned
+                     :already-submitting))
+          (try
+            (let [pending (filterv :pending-submission?
+                                   (:entries (core/day sys day-starts-at)))]
+              (if (empty? pending)
+                (do (core/emit! sys {:type :worklog/nothing-to-submit :day day-starts-at})
+                    {:ok false :fault :nothing-to-submit})
+                (let [outcomes (mapv #(submit-entry! sys %) pending)
+                      counted (frequencies outcomes)]
+                  (core/emit! sys {:type :worklog/day-submitted :day day-starts-at
+                                   :acknowledged (get counted :acknowledged 0)
+                                   :rejected (get counted :rejected 0)})
+                  {:ok true
+                   :submitted (count pending)
+                   :acknowledged (get counted :acknowledged 0)
+                   :rejected (get counted :rejected 0)})))
+            (finally (core/release! sys day-starts-at :submission))))))))
 
 (defn remove-entry!
   "EntryRemoved / EntryWithdrawn / EntryWithdrawalRefused."

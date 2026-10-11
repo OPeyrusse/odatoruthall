@@ -177,6 +177,21 @@
     (testing "and a day outside the window is not scanned"
       (is (= :day-outside-window (:reason (discovery/request-scan! sys long-ago)))))))
 
+(deftest a-day-is-scanned-or-submitted-never-both
+  (let [sys (installation)]
+    (testing "a day being submitted is not scanned"
+      (worklog/occupy-day! sys today :submission)
+      (is (= :day-being-submitted (:reason (discovery/request-scan! sys today))))
+      (is (empty? (discovery/active-scans sys)))
+      (worklog/release-day! sys today :submission))
+    (testing "a day being scanned is not submitted"
+      (let [scan (discovery/request-scan! sys today)]
+        (is (= :scan (worklog/busy-with sys today)))
+        (is (= :day-being-scanned (:fault (worklog/submit-day! sys today))))
+        (discovery/run-scan! sys (:scan scan))
+        (is (nil? (worklog/busy-with sys today))
+            "and the day is free again once the scan ends")))))
+
 (deftest sources-take-their-turn-one-at-a-time
   (let [sys (installation)]
     (discovery/scan! sys today)

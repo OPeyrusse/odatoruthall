@@ -60,8 +60,16 @@ enum EntryFault {
     | task_already_on_day   -- that task already has an entry on that day
 }
 
+-- What a day can be busy with. A day is scanned or submitted, never both at
+-- once and neither twice: a scan would read back time a submission is still
+-- writing, and a submission would send a day a scan is still adding to.
+enum DayProcess { scan | submission }
+
 enum SubmissionFailure {
     credential_unavailable  -- no valid Jira credential
+    | day_being_scanned     -- the day is being scanned; it is submitted once
+                            -- the scan has ended
+    | already_submitting    -- the day is already on its way to Jira
     | jira_unreachable      -- Jira did not answer
     | worklog_refused       -- Jira answered, and refused the worklog
 }
@@ -88,6 +96,8 @@ entity WorkDay {
     -- the timesheet, with nothing on it.
     starts_at: Timestamp            -- the UTC midnight the day opens on
     last_scanned_at: Timestamp?
+    busy_with: DayProcess?          -- the scan or the submission holding the
+                                    -- day; it dies with the process
 
     entries: WorklogEntry with day = this
     filled_entries: entries where is_filled
@@ -107,6 +117,10 @@ entity WorkDay {
         and acknowledged_entries.count = filled_entries.count
 
     has_been_scanned: last_scanned_at != null
+
+    -- Jira has answered for every entry the submission sent.
+    submission_answered: busy_with = submission
+        and submitted_entries.count = 0
 
     invariant DaysStartAtMidnight {
         starts_at = utc_midnight_of(starts_at)
@@ -442,8 +456,10 @@ rule DaySubmitted {
     when: OperatorSubmitsDay(day)
     let jira_access = access/Connection{service: jira}
     requires: jira_access.is_usable
+    requires: day.busy_with = null
     requires: day.has_time_to_submit
     ensures:
+        day.busy_with = submission
         for entry in day.entries where is_pending_submission:
             EntrySubmissionRequested(entry: entry)
 
@@ -456,12 +472,28 @@ rule DaySubmitted {
 rule DayNotSubmitted {
     when: OperatorSubmitsDay(day)
     let jira_access = access/Connection{service: jira}
-    requires: not jira_access.is_usable or not day.has_time_to_submit
+    requires:
+        not jira_access.is_usable
+        or day.busy_with != null
+        or not day.has_time_to_submit
     ensures:
         if not jira_access.is_usable:
             DaySubmissionRefused(day: day, failure: credential_unavailable)
+        else if day.busy_with = scan:
+            DaySubmissionRefused(day: day, failure: day_being_scanned)
+        else if day.busy_with = submission:
+            DaySubmissionRefused(day: day, failure: already_submitting)
         else:
             NothingToSubmit(day: day)
+}
+
+rule DaySubmissionEnds {
+    when: day: WorkDay.submission_answered
+    ensures: day.busy_with = null
+
+    @guidance
+        -- The day is held until Jira has answered for every entry, so that
+        -- no scan reads it and no second submission sends it in between.
 }
 
 rule EntrySubmitted {

@@ -98,6 +98,27 @@
       (is (:is-settled (worklog/day sys today))))
     (is (= 1 (count (jira/worklogs (:jira sys)))))))
 
+(deftest a-day-is-submitted-once-at-a-time
+  (let [sys (installation)]
+    (filled-day sys today "ABC-1" "1h")
+    (testing "a day held by a scan is not submitted"
+      (is (:ok (worklog/occupy-day! sys today :scan)))
+      (is (= :day-being-scanned (:fault (worklog/submit-day! sys today))))
+      (is (= :scan (worklog/busy-with sys today)) "and the scan keeps the day")
+      (worklog/release-day! sys today :scan))
+    (testing "a day already being submitted is not submitted again"
+      (worklog/occupy-day! sys today :submission)
+      (is (= :submission (:busy-with (worklog/day sys today))))
+      (is (= :already-submitting (:fault (worklog/submit-day! sys today))))
+      (worklog/release-day! sys today :submission))
+    (testing "a free day is submitted, and is free again once Jira has answered"
+      (is (:ok (worklog/submit-day! sys today)))
+      (is (nil? (worklog/busy-with sys today))))
+    (testing "and only what holds the day frees it"
+      (worklog/occupy-day! sys today :scan)
+      (worklog/release-day! sys today :submission)
+      (is (= :scan (worklog/busy-with sys today))))))
+
 (deftest a-day-submitted-twice-logs-the-time-once
   (let [sys (installation)
         entry-id (filled-day sys today "ABC-1" "1h")]

@@ -78,6 +78,7 @@ enum ScanRefusal {
     credential_unavailable      -- GitHub or Jira cannot be reached with the
                                 -- credentials in hand
     | already_scanning          -- that day is already being scanned
+    | day_being_submitted       -- that day is on its way to Jira
     | day_outside_window        -- the day is not one the timesheet shows
 }
 
@@ -248,12 +249,12 @@ rule ScanStarts {
     when: ScanRequested(day)
     let github_access = access/Connection{service: github}
     let jira_access = access/Connection{service: jira}
-    let active = DayScans where day = day and status = running
     requires: github_access.is_usable
     requires: jira_access.is_usable
-    requires: active.count = 0
+    requires: day.busy_with = null
     requires: within_timesheet_window(day.starts_at, now, worklog/config.timesheet_days)
     ensures:
+        day.busy_with = scan
         DayScan.created(day: day, status: running, started_at: now)
 }
 
@@ -261,19 +262,20 @@ rule ScanNotStarted {
     when: ScanRequested(day)
     let github_access = access/Connection{service: github}
     let jira_access = access/Connection{service: jira}
-    let active = DayScans where day = day and status = running
     requires:
         not github_access.is_usable
         or not jira_access.is_usable
-        or active.count > 0
+        or day.busy_with != null
         or not within_timesheet_window(day.starts_at, now, worklog/config.timesheet_days)
     ensures:
         if not github_access.is_usable or not jira_access.is_usable:
             ScanRefused(day: day, reason: credential_unavailable)
-        else if active.count > 0:
-            ScanRefused(day: day, reason: already_scanning)
-        else:
+        else if not within_timesheet_window(day.starts_at, now, worklog/config.timesheet_days):
             ScanRefused(day: day, reason: day_outside_window)
+        else if day.busy_with = submission:
+            ScanRefused(day: day, reason: day_being_submitted)
+        else:
+            ScanRefused(day: day, reason: already_scanning)
 
     @guidance
         -- Both services are scanned, so both credentials are needed: a scan
@@ -281,7 +283,9 @@ rule ScanNotStarted {
         -- it. Other days' scans do not stand in the way: several days are
         -- scanned side by side, and they share the GitHub budget, each
         -- waiting on it like any other. A scan asked for a day that is
-        -- already being scanned is refused; the running one carries on.
+        -- already being scanned is refused; the running one carries on. A
+        -- day is scanned or submitted, never both: a day on its way to Jira
+        -- is scanned once Jira has answered.
 }
 
 rule ScanQueuesItsSources {
@@ -541,6 +545,7 @@ rule ScanCompletes {
         scan.status = completed
         scan.finished_at = now
         scan.day.last_scanned_at = now
+        scan.day.busy_with = null
         ScanCompleted(
             scan: scan,
             day: scan.day,
