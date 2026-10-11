@@ -1,7 +1,7 @@
 -- allium: 3
 --
--- Dashboard — what gitdesk shows the operator: four groups of counts, the
--- lists behind them, and one pull request in detail.
+-- Dashboard — what gitdesk shows the operator: their own counts, the tracked
+-- members side by side, the lists behind them, and one pull request in detail.
 --
 -- Every group counts from the one snapshot the installation holds, reading the
 -- classifications as they stand. Nothing here fetches anything: a count that
@@ -32,40 +32,26 @@ surface MyWork {
     let assigned = mine where assigned_to(operator.account_login) and is_open
     let addressed = mine where addressed_for(operator.account_login) and is_open
 
-    let listed = by_recent_activity(authored + to_review + assigned + addressed)
-        where is_listable
-
     exposes:
         operator.account_login
         authored.count
         to_review.count
         assigned.count
         addressed.count
-        for pull_request in listed:
-            pull_request.repository
-            pull_request.number
-            pull_request.facts.title
-            pull_request.facts.author
-            pull_request.facts.is_draft
-            pull_request.facts.updated_at
-            pull_request.head_check
-            pull_request.is_approved
 
     related:
         MyWorkGroupPage(authored)
         MyWorkGroupPage(to_review)
         MyWorkGroupPage(assigned)
         MyWorkGroupPage(addressed)
-        for pull_request in listed:
-            PullRequestDetail(pull_request)
 
     @guarantee EachCountLeadsToItsGroup
         -- Each of the four counts is a way in: following it opens the page
-        -- dedicated to that group, which lists every pull request in it.
+        -- dedicated to that group, which lists every pull request in it. The
+        -- dashboard itself lists none of them.
 
-    @guarantee DraftsAreCountedAndHidden
-        -- A draft counts towards every group it belongs to, and appears in the
-        -- list only when the operator has asked to see drafts.
+    @guarantee DraftsAreCounted
+        -- A draft counts towards every group it belongs to.
 
     @guarantee AddressedMeansBackInMyCourt
         -- A pull request is *addressed* for the operator when they asked for
@@ -188,7 +174,9 @@ surface MergeTrain {
 }
 
 surface TeamWork {
-    -- The tracked members, and what each of them has in flight.
+    -- The tracked members side by side, shown right after the operator's own
+    -- work: for each of them, what they wrote that is in flight against what
+    -- was handed to them.
     facing operator: access/Operator
 
     exposes:
@@ -196,13 +184,75 @@ surface TeamWork {
         settings/current.tracked_members.count
         for member in settings/current.tracked_members:
             member
-            collection/snapshot.authored_by(member).count
-            collection/snapshot.drafted_by(member).count
-            collection/snapshot.assigned_to(member).count
+            (collection/snapshot.authored_by(member) where is_open).count
+            (collection/snapshot.drafted_by(member) where is_open).count
+            (collection/snapshot.assigned_to(member) where is_open).count
+
+    related:
+        for member in settings/current.tracked_members:
+            MemberWork(member)
 
     @guarantee MembersAreNotScopedToRepositories
         -- The member list is one general list: a member counts across every
         -- tracked repository, not per repository.
+
+    @guarantee MembersReadAgainstEachOther
+        -- Each member is one bar on a shared axis: what they wrote runs to its
+        -- left, drafts closest to it, and what was handed to them to its right,
+        -- so the members compare at a glance. A member with nothing in flight
+        -- still has a row.
+
+    @guarantee EachMemberLeadsToTheirWork
+        -- Following a member opens the page dedicated to them.
+}
+
+surface MemberWork {
+    -- One tracked member's pull requests in flight: what they wrote, then what
+    -- was handed to them, most recent activity first.
+    facing operator: access/Operator
+
+    context member: String
+
+    let authored = collection/snapshot.authored_by(member) where is_open
+    let assigned = collection/snapshot.assigned_to(member) where is_open
+    let listed_authored = by_recent_activity(authored) where is_listable
+    let listed_assigned = by_recent_activity(assigned) where is_listable
+
+    exposes:
+        operator.account_login
+        member
+        authored.count
+        assigned.count
+        for pull_request in listed_authored:
+            pull_request.repository
+            pull_request.number
+            pull_request.facts.title
+            pull_request.facts.author
+            pull_request.facts.updated_at
+            pull_request.head_check
+            pull_request.is_approved
+        for pull_request in listed_assigned:
+            pull_request.repository
+            pull_request.number
+            pull_request.facts.title
+            pull_request.facts.author
+            pull_request.facts.updated_at
+            pull_request.head_check
+            pull_request.is_approved
+
+    related:
+        TeamWork
+        for pull_request in listed_authored:
+            PullRequestDetail(pull_request)
+        for pull_request in listed_assigned:
+            PullRequestDetail(pull_request)
+
+    @guarantee OnlyTrackedMembers
+        -- The page exists for a tracked member only; any other login has none.
+
+    @guarantee DraftsAreCountedAndHidden
+        -- Drafts count towards both groups, and are listed only when the
+        -- operator has asked to see drafts.
 }
 
 surface PullRequestDetail {

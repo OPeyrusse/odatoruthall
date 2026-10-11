@@ -1,6 +1,7 @@
 (ns odato.ui.gitdesk
-  "What gitdesk shows the operator: four groups of counts, the lists behind
-  them, and one pull request in detail.
+  "What gitdesk shows the operator: the operator's own counts, the tracked
+  members side by side, the lists behind them, and one pull request in
+  detail.
 
   Every group counts from the one snapshot the installation holds, reading the
   classifications as they stand. Nothing here fetches anything: a count that
@@ -172,35 +173,42 @@
           "Nothing has been collected yet."
           "Nothing is tracked yet — add a repository and a member in settings.")))]))
 
-;; -------------------------------------------------------------- team work
+;; ------------------------------------------------------------ collections
 
-(def ^:private table-head
-  "text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400")
+(def ^:private list-class
+  "divide-y divide-slate-200 border-t border-slate-200 dark:divide-slate-800 dark:border-slate-800")
 
-(defn- team-work [in-force pull-requests]
-  [:section {:class parts/card}
-   [:div {:class parts/card-heading}
-    [:h2 {:class parts/heading-text} "Team work"]
-    [:span {:class parts/muted} (str (count (:members in-force)) " tracked")]]
-   (if (seq (:members in-force))
-     [:table {:class "w-full text-sm"}
-      [:thead
-       [:tr {:class table-head}
-        [:th {:class "px-4 py-2 font-medium"} "Member"]
-        [:th {:class "px-4 py-2 text-right font-medium"} "Authored"]
-        [:th {:class "px-4 py-2 text-right font-medium"} "Drafted"]
-        [:th {:class "px-4 py-2 text-right font-medium"} "Assigned"]]]
-      [:tbody {:class "divide-y divide-slate-200 dark:divide-slate-800"}
-       (for [member (sort (:members in-force))]
-         [:tr
-          [:td {:class "px-4 py-2 font-medium"} member]
-          [:td {:class "px-4 py-2 text-right tabular-nums"}
-           (count (filter #(prs/authored-by? % member) pull-requests))]
-          [:td {:class "px-4 py-2 text-right tabular-nums"}
-           (count (filter #(prs/drafted-by? % member) pull-requests))]
-          [:td {:class "px-4 py-2 text-right tabular-nums"}
-           (count (filter #(prs/assigned-to? % member) pull-requests))]])]]
-     (parts/empty-state "No members are tracked yet."))])
+(defn- plural [n word]
+  (str n " " word (when (not= 1 n) "s")))
+
+(defn- collection-card
+  "A card listing one collection of pull requests: its heading, how many it
+  holds and how many drafts it does not show, then the pull requests, most
+  recent activity first."
+  [now-ms heading pull-requests empty-message]
+  (let [shown (listed pull-requests)
+        hidden (- (count pull-requests) (count shown))]
+    [:section {:class parts/card}
+     [:div {:class "flex flex-col gap-1 px-4 py-4"}
+      heading
+      [:p {:class parts/muted}
+       (plural (count pull-requests) "pull request")
+       (when (pos? hidden)
+         [:span {:class "italic"}
+          (str " (" (plural hidden "draft") " hidden — show them in settings)")])]]
+     (if (seq shown)
+       [:ul {:class list-class} (map #(pr-row now-ms %) shown)]
+       [:div {:class "border-t border-slate-200 dark:border-slate-800"}
+        (parts/empty-state
+         (if (pos? hidden) "Only drafts here, and drafts are hidden." empty-message))])]))
+
+(def ^:private back-link
+  [:a {:href "/gitdesk" :class (str parts/muted " w-fit hover:underline")} "← gitdesk"])
+
+(def ^:private page-title "text-2xl font-semibold tracking-tight")
+
+(def ^:private arrow
+  [:span {:class "text-emerald-500" :aria-hidden "true"} "▶"])
 
 ;; ---------------------------------------------------------------- my work
 
@@ -222,14 +230,12 @@
   [mine]
   [:section {:class parts/card :id "my-work"}
    [:div {:class "flex flex-col gap-2 px-4 pt-4 pb-3"}
-    [:h2 {:class "text-2xl font-semibold tracking-tight"} "My work"]
+    [:h2 {:class page-title} "My work"]
     [:div {:class "grid grid-cols-2 gap-2 sm:grid-cols-4"}
      (for [{:keys [group label] :as g} my-work-groups]
        [:a {:href (my-work-href g) :class summary-item
             :title (str "The pull requests " label)}
-        [:span {:class summary-label}
-         label
-         [:span {:class "text-emerald-500" :aria-hidden "true"} "▶"]]
+        [:span {:class summary-label} label arrow]
         [:span {:class summary-count} (str (count (get mine group)))]])]]])
 
 (defn my-work-page
@@ -238,31 +244,113 @@
   them."
   [sys {:keys [group title empty]}]
   (let [now-ms (t/now-ms (:clock sys))
-        operator (access/operator-login sys)
-        members (get (my-work operator (collector/pull-requests sys)) group)
-        shown (listed members)
-        hidden (- (count members) (count shown))]
+        operator (access/operator-login sys)]
     [:div {:id "gitdesk-my-work" :class "flex flex-col gap-4"}
+     (collection-card now-ms
+                      (list back-link [:h1 {:class page-title} title])
+                      (get (my-work operator (collector/pull-requests sys)) group)
+                      (if operator
+                        empty
+                        "No valid GitHub credential, so there is no \"me\" yet."))]))
+
+;; -------------------------------------------------------------- team work
+
+(defn tracked-member
+  "The login, when it names a tracked member; nil otherwise."
+  [sys login]
+  (get (:members (config/current sys)) login))
+
+(defn- member-href [member]
+  (str "/gitdesk/member/" member))
+
+(defn- member-work
+  "What a member has in flight: what they wrote, and what was handed to them."
+  [member pull-requests]
+  (let [open (filterv :open? pull-requests)]
+    {:authored (filterv #(prs/authored-by? % member) open)
+     :assigned (filterv #(prs/assigned-to? % member) open)}))
+
+(def ^:private segment-tones
+  "The colours of the former gitdesk, kept so the chart reads as it did."
+  {:in-review "bg-[#fdd77c]"
+   :drafted "bg-[#a17202]"
+   :assigned "bg-[#a0d5ff]"})
+
+(defn- segment [kind n scale]
+  (when (pos? n)
+    [:div {:class (str "h-full " (segment-tones kind))
+           :style (str "width:" (scale n) "%")
+           :title (case kind
+                    :in-review (str n " in review")
+                    :drafted (plural n "draft")
+                    :assigned (str n " assigned"))}]))
+
+(defn- member-bar
+  "One member's bar. Every bar shares the same axis: what they wrote runs to
+  its left, drafts closest to it, and what was handed to them to its right, so
+  the members read against each other at a glance."
+  [{:keys [authored drafted assigned]} max-authored scale]
+  [:div {:class "flex h-6 w-full"}
+   [:div {:style (str "width:" (scale (- max-authored authored)) "%")}]
+   (segment :in-review (- authored drafted) scale)
+   (segment :drafted drafted scale)
+   (segment :assigned assigned scale)])
+
+(defn- legend-item [kind label]
+  [:span {:class "flex items-center gap-1.5"}
+   [:span {:class (str "inline-block h-2.5 w-2.5 rounded-sm " (segment-tones kind))}]
+   label])
+
+(defn- team-work
+  "The tracked members side by side: what each has in flight, authored against
+  assigned. Each member leads to the page listing those pull requests."
+  [in-force pull-requests]
+  (let [stats (for [member (sort (:members in-force))
+                    :let [{:keys [authored assigned]} (member-work member pull-requests)]]
+                {:member member
+                 :authored (count authored)
+                 :drafted (count (filter #(get-in % [:facts :is-draft]) authored))
+                 :assigned (count assigned)})
+        max-authored (reduce max 0 (map :authored stats))
+        max-size (+ max-authored (reduce max 0 (map :assigned stats)))
+        scale #(* 100.0 (/ % (max 1 max-size)))]
+    [:section {:class parts/card :id "team-work"}
+     [:div {:class "flex flex-col gap-3 px-4 pt-4 pb-4"}
+      [:div {:class "flex flex-wrap items-baseline justify-between gap-2"}
+       [:div {:class "flex items-baseline gap-2"}
+        [:h2 {:class page-title} "Team work"]
+        [:span {:class parts/muted} "(authored / assigned)"]]
+       [:div {:class (str "flex flex-wrap items-center gap-3 " parts/faint)}
+        (legend-item :in-review "in review")
+        (legend-item :drafted "drafts")
+        (legend-item :assigned "assigned")]]
+      (if (seq stats)
+        [:ul {:class "flex flex-col gap-2"}
+         (for [{:keys [member authored assigned] :as stat} stats]
+           [:li {:class "grid items-center gap-x-4 gap-y-1 sm:grid-cols-[minmax(0,1fr)_3fr]"}
+            [:a {:href (member-href member)
+                 :class "flex w-fit items-center gap-1.5 text-sm hover:underline"}
+             [:span {:class "font-medium"} (str "@" member)]
+             [:span {:class parts/muted} (str "(" authored " / " assigned ")")]
+             arrow]
+            (member-bar stat max-authored scale)])]
+        (parts/empty-state "No members are tracked yet."))]]))
+
+(defn member-page
+  "One tracked member's pull requests in flight: what they wrote, then what
+  was handed to them."
+  [sys member]
+  (let [now-ms (t/now-ms (:clock sys))
+        {:keys [authored assigned]} (member-work member (collector/pull-requests sys))]
+    [:div {:id "gitdesk-member" :class "flex flex-col gap-4"}
      [:section {:class parts/card}
       [:div {:class "flex flex-col gap-1 px-4 py-4"}
-       [:a {:href "/gitdesk" :class (str parts/muted " w-fit hover:underline")}
-        "← gitdesk"]
-       [:h1 {:class "text-2xl font-semibold tracking-tight"} title]
-       [:p {:class parts/muted}
-        (str (count members) " pull request" (when (not= 1 (count members)) "s"))
-        (when (pos? hidden)
-          [:span {:class "italic"}
-           (str " (" hidden " draft" (when (< 1 hidden) "s")
-                " hidden — show them in settings)")])]]
-      (if (seq shown)
-        [:ul {:class "divide-y divide-slate-200 border-t border-slate-200 dark:divide-slate-800 dark:border-slate-800"}
-         (map #(pr-row now-ms %) shown)]
-        [:div {:class "border-t border-slate-200 dark:border-slate-800"}
-         (parts/empty-state
-          (cond
-            (not operator) "No valid GitHub credential, so there is no \"me\" yet."
-            (pos? hidden) "Only drafts here, and drafts are hidden."
-            :else empty))])]]))
+       back-link
+       [:h1 {:class page-title} (str "@" member)]]]
+     (collection-card now-ms [:h2 {:class page-title} "Authored"] authored
+                      (str "Nothing by @" member " is in flight."))
+     (collection-card now-ms [:h2 {:class page-title} "Assigned"] assigned
+                      (str "Nothing is assigned to @" member "."))]))
 
 ;; ------------------------------------------------------------------ the body
 
@@ -273,13 +361,14 @@
         operator (access/operator-login sys)
         in-force (config/current sys)
         pull-requests (collector/pull-requests sys)
-        mine (my-work operator pull-requests)
         watched (monitoring pull-requests)
         train (merge-train pull-requests)]
     [:div {:id "gitdesk" :class "flex flex-col gap-4"}
      (collection-status sys now-ms)
 
-     (my-work-summary mine)
+     (my-work-summary (my-work operator pull-requests))
+
+     (team-work in-force pull-requests)
 
      (parts/stat-group
       "Monitoring"
@@ -294,20 +383,13 @@
        {:label "just merged" :count (count (:just-merged train)) :tone :sky}])
 
      [:div {:class "grid gap-4 lg:grid-cols-2"}
-      (pr-list "My work" now-ms
-               (listed (:authored mine) (:to-review mine)
-                       (:assigned mine) (:addressed mine))
-               (if operator
-                 "Nothing of yours is in flight."
-                 "No valid GitHub credential, so there is no \"me\" yet."))
       (pr-list "Monitoring" now-ms
                (listed (:stuck watched) (:aging watched)
                        (:conflicting watched) (:difficult watched))
                "Nothing worth a second look.")
       (pr-list "Merge train" now-ms
                (listed (:merging train) (:just-merged train))
-               "Nothing on its way in.")
-      (team-work in-force pull-requests)]
+               "Nothing on its way in.")]
 
      (when-not (:show-drafts in-force)
        [:p {:class (str "px-1 " parts/faint)}

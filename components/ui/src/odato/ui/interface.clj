@@ -4,7 +4,7 @@
   The interface is server-rendered HTML made dynamic with Datastar: the server
   already owns the snapshot and the worklog, so it renders them and pushes the
   changes. Each dashboard has one fragment — `#gitdesk`, `#gitdesk-my-work`,
-  `#worklog`, `#worklog-day` — which a collection cycle or a day scan patches in place as
+  `#gitdesk-member`, `#worklog`, `#worklog-day` — which a collection cycle or a day scan patches in place as
   its sources land."
   (:require [hiccup2.core :as h]
             [odato.time.interface :as t]
@@ -41,6 +41,16 @@
                          [:div {:data-on-load (str "@get('/sse/gitdesk/my/" (:slug group) "')")}
                           (gitdesk/my-work-page sys group)])))
 
+(defn tracked-member
+  "The login, when it names a tracked member; nil otherwise."
+  [sys login]
+  (gitdesk/tracked-member sys login))
+
+(defn member-page [sys member]
+  (document (layout/page sys {:title (str "@" member) :section :gitdesk}
+                         [:div {:data-on-load (str "@get('/sse/gitdesk/member/" member "')")}
+                          (gitdesk/member-page sys member)])))
+
 (defn pull-request-page [sys pull-request]
   (document (layout/page sys {:title "pull request" :section :gitdesk}
                          (gitdesk/detail sys pull-request))))
@@ -76,6 +86,7 @@
 
 (defn gitdesk-fragment [sys] (render (gitdesk/body sys)))
 (defn my-work-fragment [sys group] (render (gitdesk/my-work-page sys group)))
+(defn member-fragment [sys member] (render (gitdesk/member-page sys member)))
 (defn worklog-fragment [sys] (render (worklog/body sys)))
 (defn day-fragment [sys day] (render (worklog/day-page sys day)))
 

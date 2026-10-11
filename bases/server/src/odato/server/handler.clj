@@ -121,6 +121,21 @@
                                    :fragment-fn #(ui/my-work-fragment % group)})
           (not-found sys "No such group of your work."))
 
+        ;; /gitdesk/member/:login
+        (and (= :get request-method) (= 3 (count segments))
+             (= ["gitdesk" "member"] (subvec segments 0 2)))
+        (if-let [member (ui/tracked-member sys (nth segments 2))]
+          (html (ui/member-page sys member))
+          (not-found sys "No such tracked member."))
+
+        ;; /sse/gitdesk/member/:login
+        (and (= :get request-method) (= 4 (count segments))
+             (= ["sse" "gitdesk" "member"] (subvec segments 0 3)))
+        (if-let [member (ui/tracked-member sys (nth segments 3))]
+          (sse/stream sys request {:relevant? sse/gitdesk-event?
+                                   :fragment-fn #(ui/member-fragment % member)})
+          (not-found sys "No such tracked member."))
+
         ;; /gitdesk/pull-request/:owner/:name/:number
         (and (= :get request-method)
              (= 5 (count segments))
