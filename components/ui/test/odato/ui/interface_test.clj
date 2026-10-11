@@ -185,3 +185,10 @@
           "while the other day's scan is still listed")
       (discovery/run-scan! sys first-scan)
       (is (not (str/includes? (ui/worklog-fragment sys) "Scanning"))))))
+
+(deftest every-page-carries-the-theme-switch
+  (let [body (ui/worklog-page (installation))]
+    (is (str/includes? body "window.odatoTheme")
+        "the pick is put back in the head, before anything is painted")
+    (doseq [stop ["light" "system" "dark"]]
+      (is (str/includes? body (str "data-stop=\"" stop "\""))))))
