@@ -8,7 +8,11 @@
   budget is the reason: a dashboard that watches a dozen repositories on a
   60-minute cadence should not spend its hour's allowance on round trips.
 
-  Activity for a day scan comes through the search API, which is REST."
+  Activity for a day scan comes through the search API, which is REST. An
+  activity names the Jira issues in its title and nowhere else: the pull
+  request's title, or a commit's first line. A description or a commit body
+  often cites older tickets to explain the change, and citing a ticket is not
+  working on it."
   (:require [clojure.string :as str]
             [odato.github.protocol :as protocol]
             [odato.http.interface :as http]
@@ -208,12 +212,12 @@ query($q: String!, $cursor: String) {
        :query {:q (str "is:pr reviewed-by:" login " updated:" range) :per_page 50}})))
 
 (defn- ->commit-activity [item]
-  (let [message (get-in item [:commit :message])]
+  (let [title (first (str/split-lines (str (get-in item [:commit :message]))))]
     {:source :github-commits
      :happened-at (t/parse-instant (get-in item [:commit :author :date]))
      :reference (:sha item)
-     :title (first (str/split-lines (str message)))
-     :issue-keys (issue-keys message (get-in item [:repository :full_name]))}))
+     :title title
+     :issue-keys (issue-keys title)}))
 
 (defn- ->issue-activity [source item day-starts-at]
   {:source source
@@ -226,7 +230,7 @@ query($q: String!, $cursor: String) {
                     day-starts-at)
    :reference (str (:html_url item))
    :title (:title item)
-   :issue-keys (issue-keys (:title item) (:body item) (:html_url item))})
+   :issue-keys (issue-keys (:title item))})
 
 (defn- activity [c {:keys [source day-starts-at cursor] :as request}]
   (let [{:keys [path query]} (activity-request request)

@@ -18,11 +18,12 @@
   already has, so the next submission updates that worklog rather than logging
   the time twice.
 
-  Jira is the authority on what Jira holds: a day scan reads the operator's own
-  worklogs for that day, and an entry holding no time of its own takes them. An
-  entry holding time the operator typed keeps it and says what Jira holds
-  beside it, so the two are never silently added together nor silently
-  replaced.
+  Jira is the authority on what Jira holds: a day scan reads, on each task the
+  day carries, the operator's own worklogs for that day, and an entry holding
+  no time of its own takes them. An entry holding time the operator typed keeps
+  it and says what Jira holds beside it, so the two are never silently added
+  together nor silently replaced. Logging time is not work found: a worklog on
+  a task the day does not carry puts nothing on the day.
 
   Unlike everything gitdesk collects, the worklog outlives the process."
   (:require [odato.worklog.core :as core]
@@ -80,17 +81,17 @@
   [sys day-starts-at issue-key]
   (core/add-task! sys day-starts-at issue-key :added-by-operator))
 
-(defn jira-time-observed!
-  "JiraTimeRecorded. What Jira holds for a day, as a scan read it, replaced all
-  at once.
+(defn jira-time-on-task!
+  "JiraTimeOnTask. What Jira holds of the operator's own time on one task, on
+  one day, as a scan read it — `{:logged-ms … :worklogs n :worklog id-or-nil}`
+  — replacing what the last scan read.
 
-  `totals` is one entry per task — `{:key … :logged-ms … :worklogs n :worklog
-  id-or-nil}`. An entry holding nothing the operator typed takes Jira's time
-  and reads as acknowledged; one holding time they typed and have not sent
-  keeps it and records Jira's beside it. A task the scan saw no time for is a
-  task Jira holds no time for."
-  [sys day-starts-at totals]
-  (core/jira-time-observed! sys day-starts-at totals))
+  An entry holding nothing the operator typed takes Jira's time and reads as
+  acknowledged; one holding time they typed and have not sent keeps it and
+  records Jira's beside it. No worklog says Jira holds nothing. A task the day
+  does not carry stays off it: `{:ok false :fault :task-not-on-day}`."
+  [sys day-starts-at issue-key time]
+  (core/jira-time-on-task! sys day-starts-at issue-key time))
 
 (defn task-found-on-day!
   "TaskFoundOnDay. A scan adds tasks and takes none away: a task the day

@@ -13,6 +13,13 @@
   (is (= "2026-09-15" (t/format-day (t/utc-midnight-of tuesday))))
   (is (= (t/utc-midnight-of tuesday) (t/parse-day "2026-09-15"))))
 
+(deftest instants-as-jira-writes-them
+  (is (= (t/parse-instant "2026-09-15T09:00:00Z")
+         (t/parse-instant "2026-09-15T09:00:00.000+0000")))
+  (is (= (t/parse-instant "2026-09-15T07:00:00Z")
+         (t/parse-instant "2026-09-15T09:00:00.000+0200")))
+  (is (nil? (t/parse-instant "not a time"))))
+
 (deftest an-activity-belongs-to-one-day
   (let [d (t/utc-midnight-of tuesday)]
     (is (t/falls-within-day? tuesday d))

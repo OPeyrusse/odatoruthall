@@ -163,48 +163,37 @@
         {:ok true :entry (entry sys id)}))))
 
 (defn jira-time-on-task!
-  "JiraTimePutsTheTaskOnTheDay / JiraTimeReadBackOntoTheTask.
+  "JiraTimeReadBackOntoTheTask / JiraTimeOnATaskTheDayDoesNotCarry.
 
-  Time logged in Jira on a task the day did not carry puts that task on the
-  day, with the time already on it. A task the day does carry records what Jira
-  holds either way, and takes it only when it holds nothing the operator typed
-  that Jira does not already have."
-  [sys day-starts-at issue-key logged-ms worklogs worklog]
-  (let [item (items/known sys issue-key)]
-    (when item
-      (ensure-day! sys day-starts-at)
-      (let [existing (first (filter #(= issue-key (:work-item-key %))
-                                    (entries-on sys day-starts-at)))
-            id (or (:id existing) (str (random-uuid)))
-            jira-facts {:wl-entry/jira-logged-ms logged-ms
-                        :wl-entry/jira-worklogs (long worklogs)}
-            takes? (or (nil? existing) (:takes-jira-time? existing))
-            jira-time (when takes?
+  What Jira holds for one task the day carries replaces what the last scan
+  read; no worklog at all says Jira holds nothing, so a worklog withdrawn in
+  Jira stops counting. The entry takes Jira's time only when it holds nothing
+  the operator typed that Jira does not already have.
+
+  Logging time is not work found: a task the day does not carry stays off it."
+  [sys day-starts-at issue-key {:keys [logged-ms worklogs worklog]}]
+  (if-let [existing (first (filter #(= issue-key (:work-item-key %))
+                                   (entries-on sys day-starts-at)))]
+    (let [id (:id existing)
+          held? (pos? (long worklogs))
+          takes? (and held? (:takes-jira-time? existing))]
+      ;; A put of nil retracts, which is how Jira holding nothing is said.
+      (db/put! (conn sys) :wl-entry/id id
+               (merge {:wl-entry/jira-logged-ms (when held? logged-ms)
+                       :wl-entry/jira-worklogs (if held? (long worklogs) 0)}
+                      (when takes?
                         {:wl-entry/duration-ms logged-ms
                          :wl-entry/entered-text (t/format-duration logged-ms)
                          :wl-entry/jira-worklog-id worklog
                          :wl-entry/status :acknowledged
                          :wl-entry/acknowledged-at (now sys)
-                         :wl-entry/last-failure nil})]
-        (if existing
-          (db/put! (conn sys) :wl-entry/id id (merge jira-facts jira-time))
-          (do (db/transact! (conn sys)
-                            ;; DataScript stores no nil, and a brand new entity
-                            ;; map is refused outright for one — unlike a put,
-                            ;; where nil retracts. Time Jira holds under
-                            ;; several worklogs has no single id to carry.
-                            [(into {:wl-entry/id id
-                                    :wl-entry/day [:work-day/starts-at day-starts-at]
-                                    :wl-entry/work-item [:work-item/key issue-key]
-                                    :wl-entry/origin :discovered}
-                                   (remove (comp nil? val))
-                                   (merge jira-facts jira-time))])
-              (emit! sys {:type :worklog/task-put-on-day :day day-starts-at
-                          :key issue-key :origin :discovered})))
-        (when takes?
-          (emit! sys {:type :worklog/time-read-back-from-jira
-                      :entry id :key issue-key :logged logged-ms}))
-        {:ok true :entry (entry sys id)}))))
+                         :wl-entry/last-failure nil})))
+      (when takes?
+        (emit! sys {:type :worklog/time-read-back-from-jira
+                    :entry id :key issue-key :logged logged-ms}))
+      {:ok true :entry (entry sys id)})
+    (do (emit! sys {:type :worklog/jira-time-ignored :day day-starts-at :key issue-key})
+        {:ok false :fault :task-not-on-day})))
 
 (defn name-task!
   "TaskNamed / TaskNamedButUnknown / HeldTaskArrives / HeldTaskNeverArrives.
@@ -236,26 +225,6 @@
                   {:ok false :fault :unknown-task}))))))))
 
 ;; ------------------------------------------------------------ entering time
-
-(defn jira-time-observed!
-  "JiraTimeRecorded. What Jira holds for the day, replaced all at once by what
-  the scan read.
-
-  `totals` is one entry per task: `{:key … :logged-ms … :worklogs n :worklog
-  id-or-nil}`. A task the scan saw no time for is a task Jira holds no time
-  for, so a worklog withdrawn in Jira stops counting here too."
-  [sys day-starts-at totals]
-  (let [by-key (into {} (map (juxt :key identity)) totals)]
-    ;; Every entry forgets what Jira held, then is told again.
-    (doseq [e (entries-on sys day-starts-at)]
-      (when (or (some? (:jira-logged-ms e)) (pos? (:jira-worklog-count e)))
-        (db/put! (conn sys) :wl-entry/id (:id e)
-                 {:wl-entry/jira-logged-ms nil :wl-entry/jira-worklogs 0})))
-    (doseq [{:keys [key logged-ms worklogs worklog]} totals]
-      (jira-time-on-task! sys day-starts-at key logged-ms worklogs worklog))
-    (emit! sys {:type :worklog/jira-time-read :day day-starts-at
-                :tasks (vec (sort (keys by-key)))})
-    {:ok true :tasks (count totals)}))
 
 (defn enter-time!
   "TimeEntered / TimeRefused."

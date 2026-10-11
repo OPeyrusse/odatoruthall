@@ -1,14 +1,9 @@
 (ns odato.jira.client
   "Jira Cloud over its REST API.
 
-  Four things are worth saying about the search JQL below, because they are
+  Three things are worth saying about the search JQL below, because they are
   approximations Jira's own query language forces and not choices:
 
-    * worklogs       — `worklogAuthor = currentUser() AND worklogDate` finds
-      the issues, and each one's worklogs are then read over the day as an
-      exact epoch range. The JQL window is widened by a day on each side
-      because `worklogDate` is read in the site's timezone while a day here is
-      UTC; the epoch range is what actually decides.
     * issues created — `creator = currentUser() AND created` over the day, exact;
     * issues closed  — `status CHANGED TO (Done, Closed, Resolved) BY
       currentUser() DURING (...)`, exact;
@@ -18,8 +13,9 @@
       call per issue, which is why it is the last source in the queue.
 
   Every activity a Jira source returns names its issue, so a Jira activity is
-  never an orphan. Only a worklog carries time with it: it is what Jira already
-  holds for that issue on that day."
+  never an orphan. None carries time: logging time is not an activity. The time
+  Jira holds is read per task instead, once the day's tasks are known — the
+  operator's own worklogs on one issue, over the day as an exact epoch range."
   (:require [clojure.string :as str]
             [odato.http.interface :as http]
             [odato.jira.protocol :as protocol]
@@ -56,12 +52,6 @@
 (defn- jql-for [source day-starts-at]
   (let [[from to] (day-bounds day-starts-at)]
     (case source
-      :jira-worklogs
-      ;; A day either side: `worklogDate` is the site's day, the window below
-      ;; is the operator's UTC one, and the epoch range on each issue decides.
-      (format "worklogAuthor = currentUser() AND worklogDate >= \"%s\" AND worklogDate <= \"%s\""
-              (t/format-day (- day-starts-at (t/days 1)))
-              (t/format-day (+ day-starts-at (t/days 1))))
       :jira-issues-created
       (format "creator = currentUser() AND created >= \"%s\" AND created < \"%s\"" from to)
       :jira-issues-closed
@@ -102,44 +92,17 @@
          :title (str "Comment on " (:key issue) " — " (get-in issue [:fields :summary]))
          :issue-keys #{(:key issue)}}))))
 
-(defn- worklogs-on
-  "The operator's own worklogs on one issue, within one UTC day.
-
-  `startedAfter`/`startedBefore` are epoch milliseconds, so the half-open day
-  is exactly one day with nothing double-counted between adjacent ones."
-  [api base-url login day-starts-at issue]
-  (let [response (http/request api {:method :get
-                                    :path (str "/rest/api/3/issue/" (:key issue) "/worklog")
-                                    :query {:startedAfter day-starts-at
-                                            :startedBefore (+ day-starts-at (t/days 1))
-                                            :maxResults 100}})]
-    (when (http/ok? response)
-      (for [worklog (get-in response [:body :worklogs])
-            :let [started (t/parse-instant (:started worklog))
-                  author (or (get-in worklog [:author :accountId])
-                             (get-in worklog [:author :emailAddress])
-                             (get-in worklog [:author :displayName]))
-                  seconds (:timeSpentSeconds worklog)]
-            ;; Somebody else's time on the same issue is not the operator's to
-            ;; read back.
-            :when (and started seconds (= author login)
-                       (t/falls-within-day? started day-starts-at))]
-        {:source :jira-worklogs
-         :happened-at started
-         :reference (str (:id worklog))
-         :title (str (:timeSpent worklog) " on " (:key issue) " — "
-                     (get-in issue [:fields :summary]))
-         :issue-keys #{(:key issue)}
-         :logged-ms (* (long seconds) 1000)}))))
+(defn- access-failure [response]
+  (case (failure-of response)
+    :not-permitted :credential-rejected
+    :unknown-issue :service-error
+    :service-unreachable))
 
 (defn- activity [{:keys [api base-url]} {:keys [source day-starts-at cursor login]}]
   (let [start-at (if cursor (parse-long cursor) 0)
         response (search api (jql-for source day-starts-at) start-at)]
     (if-not (http/ok? response)
-      {:failure (case (failure-of response)
-                  :not-permitted :credential-rejected
-                  :unknown-issue :service-error
-                  :service-unreachable)}
+      {:failure (access-failure response)}
       (let [issues (get-in response [:body :issues])
             next-cursor (when (get-in response [:body :nextPageToken])
                           (str (+ start-at (count issues))))
@@ -149,12 +112,39 @@
         {:activities (vec (case source
                             :jira-comments
                             (mapcat #(comments-on api base-url login day-starts-at %) issues)
-                            :jira-worklogs
-                            (mapcat #(worklogs-on api base-url login day-starts-at %) issues)
                             (map #(->issue-activity base-url source day-starts-at %) issues)))
          :next-cursor next-cursor}))))
 
 ;; ----------------------------------------------------------------- worklogs
+
+(defn- task-time
+  "The operator's own worklogs on one issue within one UTC day, totalled.
+
+  `startedAfter`/`startedBefore` are epoch milliseconds, so the half-open day
+  is exactly one day with nothing double-counted between adjacent ones."
+  [{:keys [api]} {:keys [issue day-starts-at login]}]
+  (let [response (http/request api {:method :get
+                                    :path (str "/rest/api/3/issue/" issue "/worklog")
+                                    :query {:startedAfter day-starts-at
+                                            :startedBefore (+ day-starts-at (t/days 1))
+                                            :maxResults 100}})]
+    (if-not (http/ok? response)
+      {:failure (access-failure response)}
+      (let [mine (for [worklog (get-in response [:body :worklogs])
+                       :let [started (t/parse-instant (:started worklog))
+                             author (or (get-in worklog [:author :accountId])
+                                        (get-in worklog [:author :emailAddress])
+                                        (get-in worklog [:author :displayName]))
+                             seconds (:timeSpentSeconds worklog)]
+                       ;; Somebody else's time on the same issue is not the
+                       ;; operator's to read back.
+                       :when (and started seconds (= author login)
+                                  (t/falls-within-day? started day-starts-at))]
+                   {:id (str (:id worklog)) :logged-ms (* (long seconds) 1000)})]
+        {:logged-ms (reduce + 0 (map :logged-ms mine))
+         :worklogs (count mine)
+         ;; The one worklog a submission would update, when there is one.
+         :worklog (when (= 1 (count mine)) (:id (first mine)))}))))
 
 (defn- started-field [ms]
   ;; Jira wants its own offset-carrying shape, and refuses a bare `Z`.
@@ -183,6 +173,8 @@
         {:failure (failure-of response)})))
 
   (-fetch-activity [this request] (activity this request))
+
+  (-fetch-task-time [this request] (task-time this request))
 
   (-write-worklog [_ {:keys [issue worklog-id started-at duration-ms]}]
     (let [body {:started (started-field started-at)

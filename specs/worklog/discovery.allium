@@ -7,19 +7,26 @@
 --
 --   on GitHub  -- the commits they pushed, the comments they wrote, the pull
 --                 requests they opened, the pull requests they reviewed;
---   on Jira    -- the time they already logged, the comments they wrote, the
---                 issues they created, the issues they closed.
+--   on Jira    -- the comments they wrote, the issues they created, the
+--                 issues they closed.
 --
--- Every activity names the issues it belongs to -- a key in a branch name, a
--- pull request title, a commit message, or the issue the Jira activity
--- happened on. Each named issue becomes a task on that day, with no time on
+-- Every activity names the issues it belongs to -- a key in the title of the
+-- pull request it happened on, in the first line of a commit message, or the
+-- issue the Jira activity happened on. Nothing else names an issue: a pull
+-- request's description or a commit's body often cites older tickets to
+-- explain the change, and citing a ticket is not working on it. Each named
+-- issue becomes a task on that day, with no time on
 -- it: the scan says *what* was worked on, and only Jira's own worklogs say
 -- *how long*.
 --
--- A worklog is the one activity that carries time, because it *is* time: it is
--- what Jira already holds for that task on that day, whoever put it there --
--- this installation, or the operator working in Jira itself. The day reads it
--- back rather than pretending the time is not there.
+-- Logging time is not an activity. A worklog says how long, never what: on its
+-- own it puts nothing on the day, and a ticket the operator only logged time
+-- on, without commenting, creating, closing or touching it from GitHub, is not
+-- a ticket the scan found. Once the sources are drained, the scan turns to the
+-- tasks the day carries and reads, on each one, the worklogs the operator holds
+-- on it for that day -- whoever put them there: this installation, or the
+-- operator working in Jira itself. The day reads that time back rather than
+-- pretending it is not there.
 --
 -- Several activities commonly belong to the same issue -- two pull requests, a
 -- review and three comments are one ticket's day. They stay separate here,
@@ -36,9 +43,9 @@
 --   * a scan only ever adds -- it never removes a task from a day, never
 --     records the same activity twice, and never touches time the operator
 --     entered and has not sent, nor time on its way to Jira. The one thing it
---     writes is what Jira itself already holds. A worklog line is the one
---     exception in both directions, and for one reason: the line *is* time, so
---     it says what Jira says now, and it goes when Jira no longer holds it;
+--     writes is what Jira itself already holds on the tasks the day carries,
+--     and that it replaces, because it is a reading of Jira, not something
+--     done: it says what Jira says now, and nothing once Jira holds nothing;
 --   * a scan is asked for, one day at a time. Nothing scans on a schedule and
 --     nothing scans a day the operator did not choose.
 
@@ -55,7 +62,6 @@ enum ActivitySource {
     | github_comments           -- comments the operator wrote
     | github_pull_requests      -- pull requests the operator opened
     | github_reviews            -- pull requests the operator reviewed
-    | jira_worklogs             -- time the operator already logged on issues
     | jira_comments             -- comments the operator wrote on issues
     | jira_issues_created       -- issues the operator created
     | jira_issues_closed        -- issues the operator closed
@@ -75,23 +81,14 @@ enum ScanRefusal {
 ------------------------------------------------------------
 
 value ActivityObservation {
-    -- One thing the operator did, as a source reported it.
+    -- One thing the operator did, as a source reported it. It says what was
+    -- done, never how long.
     source: ActivitySource
     happened_at: Timestamp
     reference: String           -- what it was: the pull request, the comment,
-                                -- the issue, the worklog
+                                -- the issue
     title: String
     issue_keys: Set<String>     -- the Jira issues this activity names
-    logged: Duration?           -- only a worklog carries time; everything else
-                                -- says what was done, not how long
-}
-
-value TaskTime {
-    -- What Jira holds for one task on one day, totalled over its worklogs.
-    issue_key: String
-    logged: Duration
-    worklogs: Integer           -- how many worklogs that total is made of
-    worklog: String?            -- the one worklog's id, when there is one
 }
 
 ------------------------------------------------------------
@@ -107,6 +104,17 @@ external entity ActivityAnswer {
     failure: access/AccessFailure?
 }
 
+external entity TaskTimeAnswer {
+    -- What Jira hands back for one task's reading: the operator's own worklogs
+    -- on that task, dated on the scanned day, totalled -- or a failure. No
+    -- worklog at all is an answer too: zero, under none.
+    reading: TimeReading
+    logged: Duration
+    worklogs: Integer           -- how many worklogs that total is made of
+    worklog: String?            -- the one worklog's id, when there is one
+    failure: access/AccessFailure?
+}
+
 ------------------------------------------------------------
 -- Entities
 ------------------------------------------------------------
@@ -116,11 +124,17 @@ entity DayScan {
     status: running | completed
     started_at: Timestamp
     finished_at: Timestamp?
+    time_requested_at: Timestamp?   -- when the scan turned to the time Jira
+                                    -- holds on the day's tasks
 
     tasks: ScanTask with scan = this
     queued_tasks: tasks where status = queued
     scanning_tasks: tasks where status = scanning
     failed_tasks: tasks where status = failed
+
+    readings: TimeReading with scan = this
+    pending_readings: readings where status = reading
+    failed_readings: readings where status = failed
 
     activities: DiscoveredActivity with found_by = this
     attributed_activities: activities where is_attributed
@@ -139,10 +153,17 @@ entity DayScan {
         and queued_tasks.count > 0
         and access/github_budget.status = available
 
-    is_drained: status = running
+    -- Every source has had its turn: what the operator did is known, and the
+    -- tasks it put on the day are there.
+    sources_drained: status = running
         and tasks.count > 0
         and scanning_tasks.count = 0
         and queued_tasks.count = 0
+
+    -- And the time Jira holds on those tasks has been read.
+    is_drained: sources_drained
+        and time_requested_at != null
+        and pending_readings.count = 0
 
     transitions status {
         running -> completed
@@ -169,6 +190,21 @@ entity ScanTask {
     }
 }
 
+entity TimeReading {
+    -- One task's reading, once the sources are drained: what Jira holds of the
+    -- operator's own time on that task, on the scanned day.
+    scan: DayScan
+    work_item: items/WorkItem
+    status: reading | succeeded | failed
+    failure: access/AccessFailure?
+
+    transitions status {
+        reading -> succeeded
+        reading -> failed
+        terminal: succeeded, failed
+    }
+}
+
 entity DiscoveredActivity {
     -- One thing the operator did on the day, and what it was attributed to.
     -- It belongs to the day, not to the scan that found it: the day keeps its
@@ -178,9 +214,8 @@ entity DiscoveredActivity {
     source: ActivitySource
     happened_at: Timestamp
     reference: String               -- what it was: the pull request, the
-                                    -- comment, the issue, the worklog
+                                    -- comment, the issue
     title: String
-    logged: Duration?               -- what Jira holds under it, for a worklog
 
     named_keys: Set<String>         -- the keys the activity itself carries
     pending_keys: Set<String>       -- keys asked of Jira, not answered yet
@@ -253,8 +288,6 @@ rule ScanQueuesItsSources {
             service: github, status: queued, found_count: 0)
         ScanTask.created(scan: scan, source: github_reviews,
             service: github, status: queued, found_count: 0)
-        ScanTask.created(scan: scan, source: jira_worklogs,
-            service: jira, status: queued, found_count: 0)
         ScanTask.created(scan: scan, source: jira_comments,
             service: jira, status: queued, found_count: 0)
         ScanTask.created(scan: scan, source: jira_issues_created,
@@ -329,7 +362,6 @@ rule ActivityRecorded {
             happened_at: observation.happened_at,
             reference: observation.reference,
             title: observation.title,
-            logged: observation.logged,
             named_keys: observation.issue_keys,
             pending_keys: {},
             attributed_keys: {})
@@ -342,10 +374,6 @@ rule ActivityRecorded {
         -- the day already carries is not recorded again: scanning a day twice
         -- leaves it with one line per thing done, and leaves an orphan the
         -- operator has since attached attached.
-        --
-        -- The one thing a second sighting does change is the time a worklog
-        -- carries. The line is the same line; what Jira holds under it is what
-        -- Jira says now.
 }
 
 ------------------------------------------------------------
@@ -421,38 +449,54 @@ rule KeyNeverResolved {
 -- Rules -- the time Jira already holds
 ------------------------------------------------------------
 
-rule WorklogWithdrawnInJira {
-    -- A worklog line the source no longer sees is a worklog Jira no longer
-    -- holds. Every other activity belongs to the day for good, but a worklog
-    -- line *is* time, and time Jira has given up is not something to go on
-    -- showing.
-    when: task: ScanTask.status transitions_to succeeded
-    requires: task.source = jira_worklogs
+rule ScanReadsJiraTime {
+    -- What the operator did is known. Now the scan reads, on every task the day
+    -- carries, the time Jira holds for them on it -- found by this scan,
+    -- found by an earlier one, or put there by the operator.
+    when: scan: DayScan.sources_drained
+    requires: scan.time_requested_at = null
     ensures:
-        for line in DiscoveredActivities
-            where day = task.scan.day
-              and source = jira_worklogs
-              and not read_by(task):
-            not exists line
+        scan.time_requested_at = now
+        for entry in scan.day.entries:
+            TimeReading.created(scan: scan, work_item: entry.work_item,
+                status: reading)
+
+    @guidance
+        -- The reading follows the tasks, not the other way round: a worklog
+        -- on a ticket the day does not carry is never asked for, and puts
+        -- nothing on the day.
 }
 
-rule JiraTimeCollected {
-    -- The worklog source has paginated to exhaustion, so what it read is what
-    -- Jira holds for that day. It is handed over all at once, the way a
-    -- collection source replaces its result: until this moment the day showed
-    -- what the last scan read.
-    when: task: ScanTask.status transitions_to succeeded
-    let lines = DiscoveredActivities
-        where day = task.scan.day and source = jira_worklogs
-    requires: task.source = jira_worklogs
+rule TaskTimeRead {
+    when: TaskTimeReceived(reading, logged, worklogs, worklog)
+    requires: reading.status = reading
     ensures:
-        worklog/JiraTimeObserved(day: task.scan.day, totals: time_per_task(lines))
+        reading.status = succeeded
+        worklog/JiraTimeOnTask(
+            day: reading.scan.day,
+            work_item: reading.work_item,
+            logged: logged,
+            worklogs: worklogs,
+            worklog: worklog)
 
     @guidance
         -- Totalled per task, because Jira happily holds two worklogs on one
-        -- issue on one day and the day has one row for it. A source that
-        -- failed hands nothing over, so a day keeps what the last scan read
-        -- rather than appearing to have lost the time.
+        -- issue on one day and the day has one row for it. Only the
+        -- operator's own: somebody else's time on the same ticket is not
+        -- theirs to read back.
+}
+
+rule TaskTimeNotRead {
+    when: TaskTimeUnreadable(reading, failure)
+    requires: reading.status = reading
+    ensures:
+        reading.status = failed
+        reading.failure = failure
+        TaskTimeLeftAsItWas(reading: reading, failure: failure)
+
+    @guidance
+        -- A reading that failed hands nothing over: the task keeps what the
+        -- last scan read rather than appearing to have lost its time.
 }
 
 ------------------------------------------------------------
@@ -494,6 +538,7 @@ rule ScanCompletes {
             scan: scan,
             day: scan.day,
             failures: scan.failed_tasks.count,
+            unread: scan.failed_readings.count,
             unattributed: scan.unattributed_activities.count)
 
     @guidance
@@ -557,16 +602,18 @@ surface DayScanStatus {
         -- and leaves everything already on the day exactly as it was -- the
         -- time the operator typed and has not sent, the time on its way to
         -- Jira, the tasks they put there themselves, and the orphans they have
-        -- attached. A worklog line is the exception, because it is not a
-        -- record of something done but a reading of what Jira holds.
+        -- attached.
 
     @guarantee AScanReadsTheTimeJiraHolds
-        -- The one time a scan writes is Jira's own: an entry holding nothing
-        -- the operator typed takes what Jira holds for that task that day, and
-        -- a task the day did not carry lands on it with that time already on
-        -- it. What the operator typed is never overwritten and never added to
-        -- -- the entry says both, and they are the same number only when they
-        -- are.
+        -- The one time a scan writes is Jira's own, on the tasks the day
+        -- carries: an entry holding nothing the operator typed takes what Jira
+        -- holds for that task that day. What the operator typed is never
+        -- overwritten and never added to -- the entry says both, and they are
+        -- the same number only when they are.
+
+    @guarantee LoggingTimeIsNotActivity
+        -- A worklog says how long, not what. Time logged on a ticket the day
+        -- does not otherwise carry puts nothing on the day.
 
     @guarantee NothingFoundIsThrownAway
         -- An activity that names no issue, or names one Jira does not know, is
@@ -598,8 +645,10 @@ surface GithubActivityIntegration {
         -- they reviewed. Other people's work never lands on the timesheet.
 
     @guarantee ActivityCarriesItsKeys
-        -- Each activity names the Jira issues it belongs to -- from the branch
-        -- name, the title, or the message it carries.
+        -- Each activity names the Jira issues it belongs to, and only from its
+        -- title: the pull request's title for a pull request, a review or a
+        -- comment on one, the first line of the message for a commit. A key
+        -- cited in a description, a commit body or a link names nothing.
 }
 
 surface JiraActivityIntegration {
@@ -622,9 +671,30 @@ surface JiraActivityIntegration {
     @guarantee JiraActivityNamesItsIssue
         -- A comment, a creation or a closure happened on an issue, so the
         -- issue is the key: Jira activities are never unattributed.
+}
+
+surface JiraTaskTimeIntegration {
+    facing gateway: access/JiraGateway
+
+    exposes:
+        gateway.account_login
+        for reading in TimeReadings where status = reading:
+            reading.work_item.key
+            reading.scan.day.starts_at
+
+    provides:
+        for answer in TaskTimeAnswers:
+            TaskTimeReceived(answer.reading, answer.logged, answer.worklogs, answer.worklog)
+                when answer.failure = null
+            TaskTimeUnreadable(answer.reading, answer.failure)
+                when answer.failure != null
 
     @guarantee WorklogsAreTheOperatorsOwn
-        -- The worklog source answers with the time *this* operator logged on
-        -- that day, whether they logged it here or in Jira itself. Somebody
-        -- else's time on the same issue is not theirs to read back.
+        -- A reading answers with the time *this* operator logged on that task
+        -- on that day, whether they logged it here or in Jira itself.
+        -- Somebody else's time on the same issue is not theirs to read back.
+
+    @guarantee TheDayIsAUtcDay
+        -- A worklog counts towards the day its start falls on, in UTC, like
+        -- every other day in this installation.
 }

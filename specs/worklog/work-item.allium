@@ -54,8 +54,9 @@ value WorkItemFacts {
 ------------------------------------------------------------
 
 entity WorkItem {
-    key: String                 -- the Jira issue key, e.g. the one a branch
-                                -- name or a commit message carries
+    key: String                 -- the Jira issue key, e.g. the one a pull
+                                -- request title or a commit's first line
+                                -- carries
     facts: WorkItemFacts
     first_seen_at: Timestamp
     last_seen_at: Timestamp
