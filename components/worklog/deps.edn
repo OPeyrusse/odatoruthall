@@ -1,0 +1,7 @@
+{:paths ["src"]
+ :deps {poly/db {:local/root "../db"}
+        poly/time {:local/root "../time"}
+        poly/events {:local/root "../events"}
+        poly/access {:local/root "../access"}
+        poly/jira {:local/root "../jira"}
+        poly/work-item {:local/root "../work-item"}}}

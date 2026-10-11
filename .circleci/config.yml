@@ -1,5 +1,14 @@
 version: 2.1
 
+# The Clojure toolchain the workspace is built and tested with. Java 26: the
+# collection cycle and the day scan run on virtual threads, and the image runs
+# the same version.
+executors:
+  clojure:
+    docker:
+      - image: clojure:temurin-26-tools-deps
+    working_directory: ~/odatoruthall
+
 jobs:
   # Behavioural specification: structural check plus process analysis.
   # The spec is the primary artefact, so it is gated like the code. The
@@ -24,6 +33,49 @@ jobs:
           name: Check the specs (errors and process findings are fatal)
           command: ./scripts/check-specs.sh
 
+  # Every brick's tests. They run against the mock GitHub and the mock Jira,
+  # so nothing here reaches a network or needs a credential.
+  test:
+    executor: clojure
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - deps-v1-{{ checksum "deps.edn" }}
+            - deps-v1-
+      - run:
+          name: Resolve the workspace dependencies
+          command: clojure -P -M:dev:test
+      - save_cache:
+          key: deps-v1-{{ checksum "deps.edn" }}
+          paths:
+            - ~/.m2
+            - .cpcache
+      - run:
+          name: Run every brick's tests
+          command: clojure -M:dev:test
+
+  # The artefact: the uberjar the image runs. The front-end assets are
+  # committed, so this job checks that they are in step with the views rather
+  # than rebuilding them blindly.
+  build:
+    executor: clojure
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - deps-v1-{{ checksum "deps.edn" }}
+            - deps-v1-
+      - run:
+          name: Build the uberjar
+          command: ./scripts/build-jar.sh
+      - run:
+          name: The jar starts and serves both applications
+          command: ./scripts/smoke-jar.sh
+      - store_artifacts:
+          path: projects/server/target/odatoruthall.jar
+          destination: odatoruthall.jar
+
 workflows:
   ci:
     jobs:
@@ -32,3 +84,7 @@ workflows:
           filters:
             branches:
               ignore: main
+      - test
+      - build:
+          requires:
+            - test

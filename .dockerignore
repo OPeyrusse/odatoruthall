@@ -1,0 +1,8 @@
+node_modules/
+target/
+**/target/
+.cpcache/
+**/.cpcache/
+.nrepl-port
+*.log
+data/

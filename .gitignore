@@ -1,0 +1,11 @@
+target/
+classes/
+.cpcache/
+node_modules/
+.nrepl-port
+*.log
+.DS_Store
+/data/
+
+# Credentials never belong in the repository.
+.env

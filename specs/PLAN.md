@@ -302,12 +302,16 @@ These settle worklog:
 None for gitdesk: every question this plan raised is answered in §7, so the
 slices can be written without parking an `open question`.
 
-Two the worklog slice deliberately leaves for later, because neither changes
-the shape of what is written:
+One the worklog slice deliberately leaves for later, because it does not
+change the shape of what is written:
 
-- **Time logged outside this installation.** Worklogs the operator records
-  from Jira itself are not read back, so a day's total is what this
-  installation knows about, not what Jira holds. Importing them would make the
-  total authoritative at the cost of reconciling two writers on the same day.
 - **A comment on a worklog.** Jira worklogs can carry a note; an entry here
   carries only a duration. Adding one is a field and a rule, not a new shape.
+
+**Settled since.** *Time logged outside this installation* was parked here and
+is now answered: a day scan reads the operator's own worklogs for that day, so
+a day's total is what Jira holds plus what they have typed and not sent. The
+two writers are reconciled by never mixing them — an entry holding nothing the
+operator typed takes Jira's time, one holding their own keeps it and says
+Jira's beside it, and a task whose time Jira holds under several worklogs is
+read here and changed in Jira.

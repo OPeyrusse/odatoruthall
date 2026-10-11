@@ -68,6 +68,8 @@ surface Timesheet {
                 entry.status
                 entry.origin
                 entry.is_filled
+                entry.jira_logged
+                entry.differs_from_jira
                 entry.last_failure
                 lines_for(lines, day, entry.work_item.key).count
             orphan_lines(lines, day).count
@@ -112,6 +114,12 @@ surface Timesheet {
         -- A day's total is the time on its tasks, whatever their state:
         -- drafted, on its way to Jira, or acknowledged. The operator can
         -- always tell how much of the total Jira does not have yet.
+
+    @guarantee TheDayCountsWhatJiraAlreadyHolds
+        -- Time the operator logged in Jira itself counts towards the day's
+        -- total once the day has been scanned, and says that it came from
+        -- Jira. A day worked on and logged elsewhere does not read as an empty
+        -- day.
 }
 
 surface DaySheet {
@@ -149,6 +157,10 @@ surface DaySheet {
             entry.entered_text
             entry.duration
             entry.status
+            entry.jira_logged
+            entry.jira_worklogs
+            entry.differs_from_jira
+            entry.is_editable
             entry.submitted_at
             entry.acknowledged_at
             entry.last_failure
@@ -203,6 +215,12 @@ surface DaySheet {
     @guarantee WhatJiraHasIsVisible
         -- Each task says whether its time is drafted here, on its way, held by
         -- Jira, or refused -- and why it was refused.
+
+    @guarantee WhatJiraHoldsIsSaidBesideWhatWasTyped
+        -- When the time on a task is not the time Jira holds for it, the day
+        -- says both rather than picking one: the operator decides whether to
+        -- submit theirs or keep Jira's. A task whose time Jira holds under
+        -- several worklogs is read here and changed in Jira.
 }
 
 surface WorklogPersistence {

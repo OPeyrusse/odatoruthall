@@ -1,0 +1,10 @@
+;; The one deployable project: a single server running both applications, as
+;; specs/PLAN.md §6 says. It is the server base and nothing else — every
+;; component reaches it through the base's own dependencies.
+{:paths []
+ :deps {org.clojure/clojure {:mvn/version "1.12.3"}
+        poly/server {:local/root "../../bases/server"}}
+ :aliases
+ {:build
+  {:deps {io.github.clojure/tools.build {:mvn/version "0.10.9"}}
+   :ns-default build}}}

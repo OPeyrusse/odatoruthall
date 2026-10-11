@@ -1,0 +1,11 @@
+{:paths ["src" "resources"]
+ :deps {hiccup/hiccup {:mvn/version "2.0.0"}
+        poly/time {:local/root "../time"}
+        poly/events {:local/root "../events"}
+        poly/access {:local/root "../access"}
+        poly/config {:local/root "../config"}
+        poly/pull-request {:local/root "../pull-request"}
+        poly/collector {:local/root "../collector"}
+        poly/work-item {:local/root "../work-item"}
+        poly/worklog {:local/root "../worklog"}
+        poly/discovery {:local/root "../discovery"}}}
