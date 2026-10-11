@@ -1,8 +1,9 @@
 (ns odato.jira.interface
   "The Jira side of the world, behind one seam.
 
-  Jira answers three kinds of question here: what an issue is, what the
-  operator did on a day, and what became of a worklog. `client` asks the real
+  Jira answers four kinds of question here: what an issue is, what the
+  operator did on a day, how much time they logged on an issue that day, and
+  what became of a worklog. `client` asks the real
   Jira; `mock-client` answers from a script, which is how the installation runs
   and is tested without a Jira token."
   (:require [odato.jira.client :as client]
@@ -32,15 +33,22 @@
 (defn fetch-activity
   "One page of one Jira activity source, for one UTC day.
 
-  Takes `{:source :jira-worklogs|:jira-comments|:jira-issues-created|:jira-issues-closed
+  Takes `{:source :jira-comments|:jira-issues-created|:jira-issues-closed
            :day-starts-at <ms> :cursor <string|nil> :login <the operator>}`,
   and answers `{:activities [...] :next-cursor ...}` or `{:failure ...}`.
-
-  `:jira-worklogs` is the one source whose activities carry `:logged-ms`: the
-  time Jira already holds for that issue on that day, under one worklog. It is
-  the operator's own — somebody else's time on the same issue is not read back."
+  An activity says what was done, never how long."
   [c request]
   (protocol/-fetch-activity c request))
+
+(defn fetch-task-time
+  "What Jira holds of the operator's own time on one issue, on one UTC day.
+
+  Takes `{:issue \"ABC-1\" :day-starts-at <ms> :login <the operator>}` and
+  answers `{:logged-ms <total> :worklogs <n> :worklog <the one id, or nil>}` —
+  zero under none when there is no worklog — or `{:failure ...}`. Somebody
+  else's time on the same issue is not read back."
+  [c request]
+  (protocol/-fetch-task-time c request))
 
 (defn write-worklog
   "Creates the worklog, or updates the one the entry already holds.
@@ -68,4 +76,4 @@
 
 (def activity-sources
   "What the operator did on Jira, as a day scan reads it."
-  [:jira-worklogs :jira-comments :jira-issues-created :jira-issues-closed])
+  [:jira-comments :jira-issues-created :jira-issues-closed])

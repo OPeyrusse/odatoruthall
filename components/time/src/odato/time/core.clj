@@ -1,6 +1,7 @@
 (ns odato.time.core
   (:require [clojure.string :as str])
-  (:import (java.time Instant ZoneOffset ZonedDateTime LocalDate DayOfWeek)
+  (:import (java.time Instant OffsetDateTime ZoneOffset ZonedDateTime LocalDate
+                      DayOfWeek)
            (java.time.format DateTimeFormatter)))
 
 (def ^:const minute 60000)
@@ -22,10 +23,17 @@
 
 (defn system-clock [] (->SystemClock))
 
+(def ^:private offset-without-colon
+  ;; Jira writes its instants this way — `2026-09-15T09:00:00.000+0000` — which
+  ;; ISO-8601 allows and `Instant/parse` refuses.
+  (DateTimeFormatter/ofPattern "yyyy-MM-dd'T'HH:mm:ss.SSSZ"))
+
 (defn parse-instant [s]
   (when (and s (not (str/blank? (str s))))
-    (try (.toEpochMilli (Instant/parse (str s)))
-         (catch Exception _ nil))))
+    (let [s (str s)]
+      (or (try (.toEpochMilli (Instant/parse s)) (catch Exception _ nil))
+          (try (.toEpochMilli (.toInstant (OffsetDateTime/parse s offset-without-colon)))
+               (catch Exception _ nil))))))
 
 (defn fixed-clock [ms-or-string]
   (->FixedClock (atom (if (number? ms-or-string)

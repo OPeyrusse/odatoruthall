@@ -123,9 +123,8 @@
     (worklog/add-task! sys day-starts-at "ABC-1")
     (reset! entry-id (:id (first (:entries (worklog/day sys day-starts-at)))))
     (testing "a task whose time came from Jira reads as held by Jira"
-      (worklog/jira-time-observed! sys day-starts-at
-                                   [{:key "ABC-1" :logged-ms (t/hours 1)
-                                     :worklogs 1 :worklog "76812"}])
+      (worklog/jira-time-on-task! sys day-starts-at "ABC-1"
+                                  {:logged-ms (t/hours 1) :worklogs 1 :worklog "76812"})
       (let [body (ui/day-fragment sys (worklog/day sys day-starts-at))]
         (is (str/includes? body "1h"))
         (is (str/includes? body "in Jira"))
@@ -133,24 +132,22 @@
             "and says nothing more, because there is nothing to reconcile")))
     (testing "a task holding time Jira does not have says both"
       (worklog/enter-time! sys @entry-id "3h")
-      (worklog/jira-time-observed! sys day-starts-at
-                                   [{:key "ABC-1" :logged-ms (t/hours 1)
-                                     :worklogs 1 :worklog "76812"}])
+      (worklog/jira-time-on-task! sys day-starts-at "ABC-1"
+                                  {:logged-ms (t/hours 1) :worklogs 1 :worklog "76812"})
       (let [body (ui/day-fragment sys (worklog/day sys day-starts-at))]
         (is (str/includes? body "Jira holds 1h on this task today"))
         (is (str/includes? body "Submitting the day sends 3h instead"))))
     (testing "and a task Jira holds under several worklogs cannot be edited here"
-      (worklog/jira-time-observed! sys day-starts-at
-                                   [{:key "ABC-1" :logged-ms (t/minutes 90)
-                                     :worklogs 2 :worklog nil}])
+      (worklog/jira-time-on-task! sys day-starts-at "ABC-1"
+                                  {:logged-ms (t/minutes 90) :worklogs 2 :worklog nil})
       (let [body (ui/day-fragment sys (worklog/day sys day-starts-at))]
         (is (str/includes? body "under 2 worklogs"))
         (is (str/includes? body "one field cannot edit them"))
         (is (str/includes? body "disabled=\"disabled\""))))
     (testing "and one whose time is Jira's says how many worklogs make it up"
       (odato.work-item.interface/resolve! sys "ABC-2")
-      (worklog/jira-time-observed! sys day-starts-at
-                                   [{:key "ABC-2" :logged-ms (t/hours 2)
-                                     :worklogs 2 :worklog nil}])
+      (worklog/add-task! sys day-starts-at "ABC-2")
+      (worklog/jira-time-on-task! sys day-starts-at "ABC-2"
+                                  {:logged-ms (t/hours 2) :worklogs 2 :worklog nil})
       (is (str/includes? (ui/day-fragment sys (worklog/day sys day-starts-at))
                          "in Jira · 2 worklogs")))))

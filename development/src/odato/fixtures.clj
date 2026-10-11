@@ -29,22 +29,18 @@
   {:reviewer reviewer :verdict :changes-requested :submitted-at at :reviewed-sha sha})
 
 (defn activity
-  "One thing the operator did. Only a worklog carries `:logged-ms`: the time
-  Jira already holds under it."
-  [{:keys [source happened-at reference title issue-keys logged-ms]}]
-  (cond-> {:source source
-           :happened-at happened-at
-           :reference reference
-           :title title
-           :issue-keys (set issue-keys)}
-    logged-ms (assoc :logged-ms logged-ms)))
+  "One thing the operator did. It says what was done, never how long."
+  [{:keys [source happened-at reference title issue-keys]}]
+  {:source source
+   :happened-at happened-at
+   :reference reference
+   :title title
+   :issue-keys (set issue-keys)})
 
 (defn worklog
-  "One worklog Jira holds for the operator."
-  [{:keys [id key at logged-ms]}]
-  (activity {:source :jira-worklogs
-             :happened-at at
-             :reference (str id)
-             :title (str key " — logged in Jira")
-             :issue-keys #{key}
-             :logged-ms logged-ms}))
+  "One worklog Jira holds — the operator's, unless an `:author` says otherwise.
+  It goes in the mock Jira's `:time-logged`, not among the activities: logging
+  time is not something done."
+  [{:keys [id key at logged-ms author]}]
+  (cond-> {:id id :key key :at at :logged-ms logged-ms}
+    author (assoc :author author)))

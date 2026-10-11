@@ -266,7 +266,13 @@
         [:p {:class partial-notice}
          (str (:failed last-scan) " of the " (count (:tasks last-scan))
               " sources did not answer, so this day is a partial picture. "
-              "Scanning again adds what was missed.")])]
+              "Scanning again adds what was missed.")])
+      (when (and last-scan (pos? (:unread last-scan)))
+        [:p {:class partial-notice}
+         (str "Jira did not say what it holds on " (:unread last-scan)
+              (if (= 1 (:unread last-scan)) " task" " tasks")
+              ", which keep what the last scan read. "
+              "Scanning again reads them once more.")])]
 
      [:section {:class parts/card}
       [:div {:class parts/card-heading}

@@ -6,16 +6,17 @@
             [odato.time.interface :as t]))
 
 (def sources
-  "One source at a time, GitHub first. The two that cost a call per issue — the
-  worklogs and the comments — come last of their service; the worklogs first of
-  those two, because they are the only source that says how long."
+  "One source at a time, GitHub first. The comments cost a call per issue, so
+  they come last.
+
+  Logging time is not an activity, so the worklogs are not a source: the time
+  Jira holds is read per task once the sources are drained."
   [{:source :github-commits :service :github}
    {:source :github-comments :service :github}
    {:source :github-pull-requests :service :github}
    {:source :github-reviews :service :github}
    {:source :jira-issues-created :service :jira}
    {:source :jira-issues-closed :service :jira}
-   {:source :jira-worklogs :service :jira}
    {:source :jira-comments :service :jira}])
 
 (defn durable [sys] (db/durable (:store sys)))
@@ -37,8 +38,6 @@
      :happened-at (:activity/happened-at row)
      :reference (:activity/reference row)
      :title (:activity/title row)
-     ;; Only a worklog carries time: it is what Jira already holds under it.
-     :logged-ms (:activity/logged-ms row)
      :named-keys (set (:activity/named-keys row))
      :pending-keys pending
      :attributed-keys attributed
@@ -67,29 +66,6 @@
        (sort-by #(or (:happened-at %) 0))
        vec))
 
-(defn time-per-task
-  "What a worklog source read, totalled per task — which is what the day has
-  one row for. Jira happily holds two worklogs on one issue on one day.
-
-  It totals what *this* scan read, not what the day stores: a worklog withdrawn
-  in Jira is one the scan does not see, and must stop counting."
-  [observations]
-  (->> observations
-       (filter :logged-ms)
-       (mapcat (fn [line]
-                 (for [key (:issue-keys line)]
-                   (assoc line :key key))))
-       (group-by :key)
-       (map (fn [[key grouped]]
-              {:key key
-               :logged-ms (reduce + 0 (keep :logged-ms grouped))
-               :worklogs (count grouped)
-               ;; The one worklog a submission would update, when there is one.
-               :worklog (when (= 1 (count grouped))
-                          (str (:reference (first grouped))))}))
-       (sort-by :key)
-       vec))
-
 (defn lines-for [sys day-starts-at issue-key]
   (filterv #(contains? (:attributed-keys %) issue-key)
            (activities-on sys day-starts-at)))
@@ -114,6 +90,9 @@
                   tasks)
      :queued (count (filter #(= :queued (:scan-task/status %)) tasks))
      :failed (count (filter #(= :failed (:scan-task/status %)) tasks))
+     ;; Tasks whose time Jira could not be asked for: they keep what the last
+     ;; scan read.
+     :unread (or (:scan/unread row) 0)
      :found (reduce + 0 (map #(or (:scan-task/found-count %) 0) tasks))}))
 
 (defn scans [sys]

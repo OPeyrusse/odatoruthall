@@ -113,40 +113,25 @@
   "ActivityRecorded. An activity that did not happen on the day being scanned
   is not that day's work. An activity the day already carries is not recorded
   again: scanning a day twice leaves it with one line per thing done, and
-  leaves an orphan the operator has since attached attached.
-
-  The one thing a second sighting does change is the time a worklog carries:
-  the line is the same line, and what Jira holds under it is what Jira says
-  now. Answers the ident either way, because the line counts towards the day's
-  Jira time whether this scan is the one that first saw it or not."
+  leaves an orphan the operator has since attached attached. Answers the ident
+  of a line recorded now."
   [sys day-starts-at observation]
   (let [ident (core/activity-ident day-starts-at (:source observation)
                                    (:reference observation))
         known (db/lookup (db/db (core/durable sys)) :activity/ident ident)]
-    (when (t/falls-within-day? (:happened-at observation) day-starts-at)
-      (if known
-        (do (when (not= (:logged-ms observation)
-                        (:activity/logged-ms (db/pull (db/db (core/durable sys))
-                                                      '[*] known)))
-              (db/put! (core/durable sys) :activity/ident ident
-                       {:activity/logged-ms (:logged-ms observation)}))
-            ident)
-        (do (db/transact! (core/durable sys)
-                          [{:activity/ident ident
-                            :activity/day [:work-day/starts-at day-starts-at]
-                            :activity/source (:source observation)
-                            :activity/happened-at (:happened-at observation)
-                            :activity/reference (:reference observation)
-                            :activity/title (:title observation)
-                            :activity/named-keys (vec (:issue-keys observation))}
-                           ;; Only a worklog carries time, and DataScript
-                           ;; stores no nil.
-                           (cond-> {:activity/ident ident}
-                             (:logged-ms observation)
-                             (assoc :activity/logged-ms (:logged-ms observation)))])
-            (doseq [issue-key (:issue-keys observation)]
-              (key-found! sys ident issue-key))
-            ident)))))
+    (when (and (t/falls-within-day? (:happened-at observation) day-starts-at)
+               (not known))
+      (db/transact! (core/durable sys)
+                    [{:activity/ident ident
+                      :activity/day [:work-day/starts-at day-starts-at]
+                      :activity/source (:source observation)
+                      :activity/happened-at (:happened-at observation)
+                      :activity/reference (:reference observation)
+                      :activity/title (:title observation)
+                      :activity/named-keys (vec (:issue-keys observation))}])
+      (doseq [issue-key (:issue-keys observation)]
+        (key-found! sys ident issue-key))
+      ident)))
 
 ;; ------------------------------------------------------------- one source's turn
 
@@ -175,46 +160,13 @@
                                                  (access/connection sys :jira)))))
       (catch Exception _ {:failure :service-unreachable}))))
 
-(defn- forget-withdrawn-worklogs!
-  "A worklog line the scan no longer sees is a worklog Jira no longer holds.
-
-  Every other activity belongs to the day for good — a scan only adds — but a
-  worklog line *is* time, and time Jira has given up is not something to go on
-  showing."
-  [sys day-starts-at seen]
-  (let [kept (into #{} (map #(str (:reference %))) seen)
-        stale (->> (core/activities-on sys day-starts-at)
-                   (filter #(= :jira-worklogs (:source %)))
-                   (remove #(contains? kept (str (:reference %)))))]
-    (when (seq stale)
-      (db/transact! (core/durable sys)
-                    (mapv #(db/retract-entity
-                            (db/lookup (db/db (core/durable sys))
-                                       :activity/ident (:id %)))
-                          stale)))))
-
-(defn- jira-time-collected!
-  "JiraTimeCollected. The worklog source has paginated to exhaustion, so what
-  it read is what Jira holds for that day; it is handed over all at once, the
-  way a collection source replaces its result.
-
-  A source that failed hands nothing over, so the day keeps what the last scan
-  read rather than appearing to have lost the time."
-  [sys task day-starts-at seen]
-  (when (= :jira-worklogs (:scan-task/source task))
-    (forget-withdrawn-worklogs! sys day-starts-at seen)
-    (worklog/jira-time-observed! sys day-starts-at (core/time-per-task seen))))
-
 (defn- scan-source!
   "One source, paginating to exhaustion. As with collection, quota exhaustion
   is a wait: everything found so far stays on the day, and the source in flight
   keeps its cursor."
   [sys scan-id day-starts-at task-id]
   (db/put! (core/volatile* sys) :scan-task/id task-id {:scan-task/status :scanning})
-  ;; `seen` is what this source has read so far. It matters for the worklogs:
-  ;; what they total is what Jira holds now, not what the day already knew.
-  (loop [cursor (:scan-task/page-cursor (task-row sys task-id))
-         seen []]
+  (loop [cursor (:scan-task/page-cursor (task-row sys task-id))]
     (let [task (task-row sys task-id)
           github? (= :github (:scan-task/service task))]
       (when (and github? (not (access/budget-available? sys)))
@@ -226,7 +178,7 @@
           (access/budget-observed! sys (or (get-in answer [:budget :remaining]) 1)
                                    (get-in answer [:budget :resets-at])))
         (cond
-          (:retry answer) (do (access/await-budget! sys) (recur cursor seen))
+          (:retry answer) (do (access/await-budget! sys) (recur cursor))
 
           (:failure answer)
           (do (db/put! (core/volatile* sys) :scan-task/id task-id
@@ -245,11 +197,48 @@
                       :scan-task/found-count (+ (long (or (:scan-task/found-count task) 0))
                                                 (count recorded))})
             (if-let [next-cursor (:next-cursor answer)]
-              (recur next-cursor (into seen (:activities answer)))
-              (do (db/put! (core/volatile* sys) :scan-task/id task-id
-                           {:scan-task/status :succeeded :scan-task/page-cursor nil})
-                  (jira-time-collected! sys task day-starts-at
-                                        (into seen (:activities answer)))))))))))
+              (recur next-cursor)
+              (db/put! (core/volatile* sys) :scan-task/id task-id
+                       {:scan-task/status :succeeded :scan-task/page-cursor nil}))))))))
+
+;; ------------------------------------------------------ the time Jira holds
+
+(defn- read-task-time
+  "One task's reading. Jira answers with a total — zero under none when the
+  operator logged nothing — or a failure."
+  [sys day-starts-at issue-key]
+  (try
+    (jira/fetch-task-time (:jira sys)
+                          {:issue issue-key
+                           :day-starts-at day-starts-at
+                           :login (:connection/account-login
+                                   (access/connection sys :jira))})
+    (catch Exception _ {:failure :service-unreachable})))
+
+(defn- read-jira-time!
+  "ScanReadsJiraTime / TaskTimeRead / TaskTimeNotRead. What the operator did is
+  known; now, on every task the day carries, the time Jira holds for them on
+  it. The reading follows the tasks: a worklog on a ticket the day does not
+  carry is never asked for, and puts nothing on the day.
+
+  A reading that failed hands nothing over, so that task keeps what the last
+  scan read rather than appearing to have lost its time. Answers how many
+  could not be read."
+  [sys scan-id day-starts-at]
+  (let [unread (reduce
+                (fn [unread issue-key]
+                  (let [answer (read-task-time sys day-starts-at issue-key)]
+                    (if-let [failure (:failure answer)]
+                      (do (core/emit! sys {:type :scan/task-time-unread
+                                           :scan scan-id :key issue-key
+                                           :failure failure})
+                          (inc unread))
+                      (do (worklog/jira-time-on-task! sys day-starts-at issue-key answer)
+                          unread))))
+                0
+                (map :work-item-key (:entries (worklog/day sys day-starts-at))))]
+    (db/put! (core/volatile* sys) :scan/id scan-id {:scan/unread unread})
+    unread))
 
 ;; --------------------------------------------------------------- the whole scan
 
@@ -260,7 +249,8 @@
       (if-let [task (next-task sys scan-id)]
         (do (scan-source! sys scan-id day-starts-at (:scan-task/id task))
             (recur))
-        (let [scan (core/last-scan sys day-starts-at)
+        (let [unread (read-jira-time! sys scan-id day-starts-at)
+              scan (core/last-scan sys day-starts-at)
               orphans (count (core/orphans-on sys day-starts-at))]
           (db/put! (core/volatile* sys) :scan/id scan-id
                    {:scan/status :completed :scan/finished-at (core/now sys)})
@@ -272,9 +262,10 @@
                            :scan scan-id
                            :day day-starts-at
                            :failures (:failed scan)
+                           :unread unread
                            :unattributed orphans})
           {:scan scan-id :day day-starts-at :failures (:failed scan)
-           :unattributed orphans})))))
+           :unread unread :unattributed orphans})))))
 
 (defn scan! [sys day-starts-at]
   (let [outcome (request-scan! sys day-starts-at)]

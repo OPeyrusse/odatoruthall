@@ -173,6 +173,7 @@ surface DaySheet {
                 line.named_keys
         last_scan.finished_at
         last_scan.failed_tasks.count
+        last_scan.failed_readings.count
         orphans.count
         for orphan in by_moment(orphans):
             orphan.source

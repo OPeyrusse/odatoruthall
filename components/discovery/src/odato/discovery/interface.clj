@@ -10,13 +10,15 @@
 
   Every activity names the issues it belongs to, and each named issue becomes a
   task on that day with no time on it: the scan says *what* was worked on,
-  never *how long*.
+  never *how long*. Logging time is not an activity: once the sources are
+  drained, the scan reads on each task the day carries the operator's own
+  worklogs for that day, and the entry is told what Jira holds.
 
   Two promises make a scan safe to ask for twice:
 
     * a scan only ever adds — it never removes a task or an activity from a
       day, never records the same activity twice, and never touches the time
-      the operator entered, submitted or had acknowledged;
+      the operator entered and has not sent, nor the time on its way to Jira;
     * a scan is asked for, one day at a time. Nothing scans on a schedule."
   (:require [odato.discovery.core :as core]
             [odato.discovery.scan :as scan]))
@@ -81,5 +83,5 @@
   (core/last-scan sys day-starts-at))
 
 (def sources
-  "The seven sources a scan reads, in the order it reads them."
+  "The sources a scan reads, in the order it reads them."
   core/sources)

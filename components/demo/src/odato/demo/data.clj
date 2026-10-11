@@ -146,19 +146,15 @@
               "WID-83" {:summary "Keep the cursor across a quota wait"
                         :status "Done" :url "https://jira.example/browse/WID-83"
                         :is-closed true}}
+     ;; Time already logged in Jira, read back onto the tasks the day carries.
+     ;; The worklog on WID-83 is somebody else's, so it is not read back.
+     :time-logged
+     [{:id 76812 :key "WID-88" :at (+ day (t/hours 11)) :logged-ms (t/hours 1)}
+      {:id 76813 :key "WID-90" :at (+ day (t/hours 16)) :logged-ms (t/minutes 30)}
+      {:id 76814 :key "WID-83" :at (+ day (t/hours 17)) :logged-ms (t/hours 2)
+       :author "bob"}]
      :activities
-     {:jira-worklogs
-      [{:source :jira-worklogs :happened-at (+ day (t/hours 11))
-        :reference "76812"
-        :title "1h on WID-88 — Cache the snapshot between renders"
-        :issue-keys #{"WID-88"}
-        :logged-ms (t/hours 1)}
-       {:source :jira-worklogs :happened-at (+ day (t/hours 16))
-        :reference "76813"
-        :title "30m on WID-90 — Say which sources failed to refresh"
-        :issue-keys #{"WID-90"}
-        :logged-ms (t/minutes 30)}]
-      :jira-comments
+     {:jira-comments
       [{:source :jira-comments :happened-at (+ day (t/hours 15))
         :reference "https://jira.example/browse/WID-90?focusedCommentId=1"
         :title "Comment on WID-90 — Say which sources failed to refresh"
