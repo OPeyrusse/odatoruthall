@@ -8,6 +8,7 @@ jar="$root/projects/server/target/odatoruthall.jar"
 port=${PORT:-7788}
 
 [ -f "$jar" ] || { echo "no jar at $jar; run scripts/build-jar.sh first" >&2; exit 1; }
+command -v curl >/dev/null || { echo "curl is needed to probe the server" >&2; exit 1; }
 
 ODATO_DEMO=1 PORT="$port" java -jar "$jar" &
 pid=$!

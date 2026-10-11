@@ -112,6 +112,11 @@ jobs:
           name: Build the uberjar
           command: ./scripts/build-jar.sh
       - save-deps
+      # The Clojure image purges curl once the CLI is installed, and the smoke
+      # test probes the server with it.
+      - run:
+          name: Install curl
+          command: apt-get update -qq && apt-get install -y -qq --no-install-recommends curl
       - run:
           name: The jar starts and serves both applications
           command: ./scripts/smoke-jar.sh
