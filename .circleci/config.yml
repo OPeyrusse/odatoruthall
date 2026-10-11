@@ -9,6 +9,26 @@ executors:
       - image: clojure:temurin-26-tools-deps
     working_directory: ~/odatoruthall
 
+commands:
+  # Every brick has its own deps.edn, so the cache key covers all of them, not
+  # only the root one.
+  restore-deps:
+    steps:
+      - run:
+          name: Fingerprint every deps.edn
+          command: find . -name deps.edn -not -path './.git/*' | sort | xargs cat > /tmp/deps-fingerprint
+      - restore_cache:
+          keys:
+            - deps-v2-{{ .Environment.CIRCLE_JOB }}-{{ checksum "/tmp/deps-fingerprint" }}
+            - deps-v2-{{ .Environment.CIRCLE_JOB }}-
+  save-deps:
+    steps:
+      - save_cache:
+          key: deps-v2-{{ .Environment.CIRCLE_JOB }}-{{ checksum "/tmp/deps-fingerprint" }}
+          paths:
+            - ~/.m2
+            - ~/.gitlibs
+
 jobs:
   # Behavioural specification: structural check plus process analysis.
   # The spec is the primary artefact, so it is gated like the code. The
@@ -39,36 +59,55 @@ jobs:
     executor: clojure
     steps:
       - checkout
-      - restore_cache:
-          keys:
-            - deps-v1-{{ checksum "deps.edn" }}
-            - deps-v1-
+      - restore-deps
       - run:
           name: Resolve the workspace dependencies
           command: clojure -P -M:dev:test
-      - save_cache:
-          key: deps-v1-{{ checksum "deps.edn" }}
-          paths:
-            - ~/.m2
-            - .cpcache
+      - save-deps
       - run:
           name: Run every brick's tests
           command: clojure -M:dev:test
+          environment:
+            ODATO_TEST_REPORT: test-results/clojure/results.xml
+      - store_test_results:
+          path: test-results
 
-  # The artefact: the uberjar the image runs. The front-end assets are
-  # committed, so this job checks that they are in step with the views rather
-  # than rebuilding them blindly.
-  build:
-    executor: clojure
+  # The front-end assets are committed so that the jar and the image build
+  # without Node. This rebuilds them from the views and fails when the
+  # committed ones are stale: run `npm run assets` and commit the result.
+  assets:
+    docker:
+      - image: cimg/node:22.22
     steps:
       - checkout
       - restore_cache:
           keys:
-            - deps-v1-{{ checksum "deps.edn" }}
-            - deps-v1-
+            - npm-v1-{{ checksum "package-lock.json" }}
+      - run:
+          name: Install the asset toolchain
+          command: npm ci
+      - save_cache:
+          key: npm-v1-{{ checksum "package-lock.json" }}
+          paths:
+            - ~/.npm
+      - run:
+          name: Rebuild the stylesheet and the Datastar bundle
+          command: npm run assets
+      - run:
+          name: The committed assets match the views
+          command: git diff --exit-code --stat -- bases/server/resources/public
+
+  # The artefact: the uberjar the image runs, started once to show it serves
+  # both applications.
+  build:
+    executor: clojure
+    steps:
+      - checkout
+      - restore-deps
       - run:
           name: Build the uberjar
           command: ./scripts/build-jar.sh
+      - save-deps
       - run:
           name: The jar starts and serves both applications
           command: ./scripts/smoke-jar.sh
@@ -85,6 +124,8 @@ workflows:
             branches:
               ignore: main
       - test
+      - assets
       - build:
           requires:
             - test
+            - assets
