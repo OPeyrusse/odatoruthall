@@ -107,7 +107,9 @@
                      :reviews [(approved "grace" (- now (t/days 1)) "head")]})]}
 
      :activities
-     (let [day (t/utc-midnight-of now)
+     ;; The last working day, not today: the timesheet shows five of those, and
+     ;; a weekend would otherwise leave the demo with a day nothing can scan.
+     (let [day (last (t/working-days-ending-at now 5))
            at (fn [h] (+ day (t/hours h)))]
        {:github-commits
         [{:source :github-commits :happened-at (at 9)
@@ -130,7 +132,7 @@
           :title "Reviewed: say which sources failed to refresh" :issue-keys #{}}]})}))
 
 (defn jira-script [now]
-  (let [day (t/utc-midnight-of now)]
+  (let [day (last (t/working-days-ending-at now 5))]
     {:login "ada"
      :issues {"WID-88" {:summary "Cache the snapshot between renders"
                         :status "In Progress" :url "https://jira.example/browse/WID-88"
@@ -145,7 +147,18 @@
                         :status "Done" :url "https://jira.example/browse/WID-83"
                         :is-closed true}}
      :activities
-     {:jira-comments
+     {:jira-worklogs
+      [{:source :jira-worklogs :happened-at (+ day (t/hours 11))
+        :reference "76812"
+        :title "1h on WID-88 — Cache the snapshot between renders"
+        :issue-keys #{"WID-88"}
+        :logged-ms (t/hours 1)}
+       {:source :jira-worklogs :happened-at (+ day (t/hours 16))
+        :reference "76813"
+        :title "30m on WID-90 — Say which sources failed to refresh"
+        :issue-keys #{"WID-90"}
+        :logged-ms (t/minutes 30)}]
+      :jira-comments
       [{:source :jira-comments :happened-at (+ day (t/hours 15))
         :reference "https://jira.example/browse/WID-90?focusedCommentId=1"
         :title "Comment on WID-90 — Say which sources failed to refresh"

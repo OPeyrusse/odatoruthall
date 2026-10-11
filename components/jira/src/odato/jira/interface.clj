@@ -32,9 +32,13 @@
 (defn fetch-activity
   "One page of one Jira activity source, for one UTC day.
 
-  Takes `{:source :jira-comments|:jira-issues-created|:jira-issues-closed
+  Takes `{:source :jira-worklogs|:jira-comments|:jira-issues-created|:jira-issues-closed
            :day-starts-at <ms> :cursor <string|nil> :login <the operator>}`,
-  and answers `{:activities [...] :next-cursor ...}` or `{:failure ...}`."
+  and answers `{:activities [...] :next-cursor ...}` or `{:failure ...}`.
+
+  `:jira-worklogs` is the one source whose activities carry `:logged-ms`: the
+  time Jira already holds for that issue on that day, under one worklog. It is
+  the operator's own — somebody else's time on the same issue is not read back."
   [c request]
   (protocol/-fetch-activity c request))
 
@@ -64,4 +68,4 @@
 
 (def activity-sources
   "What the operator did on Jira, as a day scan reads it."
-  [:jira-comments :jira-issues-created :jira-issues-closed])
+  [:jira-worklogs :jira-comments :jira-issues-created :jira-issues-closed])

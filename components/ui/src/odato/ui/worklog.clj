@@ -22,9 +22,25 @@
                (parts/chip "drafted" :amber)
                (parts/chip "no time" :neutral))
     :submitted (parts/chip "on its way" :sky)
-    :acknowledged (parts/chip "in Jira" :green)
+    :acknowledged (parts/chip (if (> (:jira-worklog-count entry) 1)
+                                (str "in Jira · " (:jira-worklog-count entry) " worklogs")
+                                "in Jira")
+                              :green)
     :rejected (parts/chip (str "refused: " (parts/humanise (:last-failure entry))) :red)
     nil))
+
+(defn- jira-time-note
+  "What Jira holds, when it is not what the entry says. Neither is added to the
+  other and neither is thrown away: the operator decides which to keep."
+  [entry]
+  (when (:differs-from-jira? entry)
+    [:p {:class "mt-1 text-xs text-amber-700 dark:text-amber-400"}
+     (str "Jira holds " (t/format-duration (:jira-logged-ms entry))
+          " on this task today"
+          (when (> (:jira-worklog-count entry) 1)
+            (str ", under " (:jira-worklog-count entry) " worklogs"))
+          ". Submitting the day sends "
+          (t/format-duration (:duration-ms entry)) " instead.")]))
 
 (defn- command-form
   "Every command is a real form that posts, and Datastar posts it without a
@@ -145,7 +161,8 @@
         (parts/chip (or (get-in entry [:work-item :status]) "unknown") :neutral)
         (when (= :discovered (:origin entry)) (parts/chip "found by a scan" :sky))
         (status-chip entry)]
-       [:p {:class (str parts/muted " mt-0.5")} (get-in entry [:work-item :summary])]]
+       [:p {:class (str parts/muted " mt-0.5")} (get-in entry [:work-item :summary])]
+       (jira-time-note entry)]
       [:div {:class "flex items-center gap-2"}
        (command-form
         {:action (str "/worklog/entries/" (:id entry) "/time")
@@ -154,6 +171,11 @@
                  :type "text" :name "text" :placeholder "1h 30m"
                  :value (or (:entered-text entry) "")
                  :disabled (not (:editable? entry))
+                 :title (when (> (:jira-worklog-count entry) 1)
+                          (str "Jira holds this task's time under "
+                               (:jira-worklog-count entry)
+                               " worklogs; one field cannot edit them. "
+                               "Change them in Jira."))
                  :aria-label (str "time on " (:work-item-key entry))}]
         [:button {:class parts/button :type "submit"
                   :disabled (not (:editable? entry))}

@@ -18,6 +18,12 @@
   already has, so the next submission updates that worklog rather than logging
   the time twice.
 
+  Jira is the authority on what Jira holds: a day scan reads the operator's own
+  worklogs for that day, and an entry holding no time of its own takes them. An
+  entry holding time the operator typed keeps it and says what Jira holds
+  beside it, so the two are never silently added together nor silently
+  replaced.
+
   Unlike everything gitdesk collects, the worklog outlives the process."
   (:require [odato.worklog.core :as core]
             [odato.worklog.submit :as submit]))
@@ -73,6 +79,18 @@
   "OperatorAddsTask, for a work item already known."
   [sys day-starts-at issue-key]
   (core/add-task! sys day-starts-at issue-key :added-by-operator))
+
+(defn jira-time-observed!
+  "JiraTimeRecorded. What Jira holds for a day, as a scan read it, replaced all
+  at once.
+
+  `totals` is one entry per task — `{:key … :logged-ms … :worklogs n :worklog
+  id-or-nil}`. An entry holding nothing the operator typed takes Jira's time
+  and reads as acknowledged; one holding time they typed and have not sent
+  keeps it and records Jira's beside it. A task the scan saw no time for is a
+  task Jira holds no time for."
+  [sys day-starts-at totals]
+  (core/jira-time-observed! sys day-starts-at totals))
 
 (defn task-found-on-day!
   "TaskFoundOnDay. A scan adds tasks and takes none away: a task the day

@@ -30,19 +30,21 @@
     (let [config (settings {:turso (:options turso)
                             ;; Both given: Turso is what the operator asked for.
                             :db-file "/tmp/should-not-be-used.edn"})
-          day (t/parse-day "2026-09-15")]
+          ;; The system runs on the real clock, so the day has to be one the
+          ;; timesheet shows today — not a date written down once.
+          day (atom nil)]
       (testing "what a day was filled with"
         (let [sys (system/create config)]
           (is (= :storage (db/backend (:store sys))))
+          (reset! day (:starts-at (last (worklog/window sys))))
           (items/resolve! sys "WID-88")
-          (worklog/ensure-day! sys day)
-          (worklog/add-task! sys day "WID-88")
-          (let [entry (first (:entries (worklog/day sys day)))]
+          (worklog/add-task! sys @day "WID-88")
+          (let [entry (first (:entries (worklog/day sys @day)))]
             (worklog/enter-time! sys (:id entry) "1h 30m"))
           (system/stop! sys)))
       (testing "is what the next process finds in Turso"
         (let [sys (system/create config)
-              entry (first (:entries (worklog/day sys day)))]
+              entry (first (:entries (worklog/day sys @day)))]
           (is (= "WID-88" (:work-item-key entry)))
           (is (= "1h 30m" (:entered-text entry)))
           (is (= (t/minutes 90) (:duration-ms entry)))

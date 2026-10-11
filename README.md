@@ -233,6 +233,16 @@ command is a plain form post that works without JavaScript; with it, Datastar
 makes the same post and the server answers 204 because the stream will do the
 patching.
 
+**Jira is the authority on what Jira holds.** A day scan reads the operator's
+own worklogs for that day — whether this installation wrote them or they
+logged them in Jira itself — so a day worked on and logged elsewhere does not
+read as an empty day. An entry holding no time of its own takes Jira's and
+reads as acknowledged; one holding time they typed and have not sent keeps it
+and says what Jira holds beside it, because adding the two together or
+silently replacing one would both be wrong. A task whose time Jira holds under
+several worklogs is read here and changed in Jira: one field cannot edit two
+worklogs.
+
 **Mock services are first-class.** `odato.github.mock` and `odato.jira.mock`
 answer from a script: pages, per-source failures, a budget that can be made to
 run out, and worklogs that are remembered so a day submitted twice can be shown
@@ -246,7 +256,4 @@ to log the time once. Every test runs against them, and so does `ODATO_DEMO=1`.
   DataScript stores and restores a database through its own HTTP client — but
   against a Turso that answers from a map (`odato.fake-turso`), not against
   turso.tech. Point `TURSO_URL` and `TURSO_TOKEN` at a real one to find out.
-- **Time logged outside this installation** is not read back, so a day's total
-  is what this installation knows about rather than what Jira holds — the open
-  question the specification parks in `worklog/worklog`.
 - **A comment on a worklog.** An entry carries a duration and no note.
