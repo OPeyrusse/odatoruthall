@@ -123,9 +123,25 @@ workflows:
           filters:
             branches:
               ignore: main
-      - test
-      - assets
+      - test:
+          filters:
+            branches:
+              ignore: main
+      - assets:
+          filters:
+            branches:
+              ignore: main
       - build:
           requires:
             - test
             - assets
+          filters:
+            branches:
+              ignore: main
+  continuous-release:
+    jobs:
+      - build:
+          name: release-build
+          filters:
+            branches:
+              only: main
