@@ -2,11 +2,13 @@ version: 2.1
 
 # The Clojure toolchain the workspace is built and tested with. Java 26: the
 # collection cycle and the day scan run on virtual threads, and the image runs
-# the same version.
+# the same version. Medium (2 vCPU, 4 GB): the uberjar compile peaks under
+# 3 cores and 500 MB, so the org default (large) is mostly idle.
 executors:
   clojure:
     docker:
       - image: clojure:temurin-26-tools-deps
+    resource_class: medium
     working_directory: ~/odatoruthall
 
 commands:
@@ -37,6 +39,7 @@ jobs:
   spec-check:
     docker:
       - image: cimg/rust:1.94
+    resource_class: small
     steps:
       - checkout
       - restore_cache:
@@ -78,6 +81,7 @@ jobs:
   assets:
     docker:
       - image: cimg/node:22.22
+    resource_class: small
     steps:
       - checkout
       - restore_cache:
@@ -108,6 +112,11 @@ jobs:
           name: Build the uberjar
           command: ./scripts/build-jar.sh
       - save-deps
+      # The Clojure image purges curl once the CLI is installed, and the smoke
+      # test probes the server with it.
+      - run:
+          name: Install curl
+          command: apt-get update -qq && apt-get install -y -qq --no-install-recommends curl
       - run:
           name: The jar starts and serves both applications
           command: ./scripts/smoke-jar.sh
