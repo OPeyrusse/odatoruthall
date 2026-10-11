@@ -10,9 +10,12 @@
 --   on Jira    -- the comments they wrote, the issues they created, the
 --                 issues they closed.
 --
--- Every activity names the issues it belongs to -- a key in a branch name, a
--- pull request title, a commit message, or the issue the Jira activity
--- happened on. Each named issue becomes a task on that day, with no time on
+-- Every activity names the issues it belongs to -- a key in the title of the
+-- pull request it happened on, in the first line of a commit message, or the
+-- issue the Jira activity happened on. Nothing else names an issue: a pull
+-- request's description or a commit's body often cites older tickets to
+-- explain the change, and citing a ticket is not working on it. Each named
+-- issue becomes a task on that day, with no time on
 -- it: the scan says *what* was worked on, and only Jira's own worklogs say
 -- *how long*.
 --
@@ -642,8 +645,10 @@ surface GithubActivityIntegration {
         -- they reviewed. Other people's work never lands on the timesheet.
 
     @guarantee ActivityCarriesItsKeys
-        -- Each activity names the Jira issues it belongs to -- from the branch
-        -- name, the title, or the message it carries.
+        -- Each activity names the Jira issues it belongs to, and only from its
+        -- title: the pull request's title for a pull request, a review or a
+        -- comment on one, the first line of the message for a commit. A key
+        -- cited in a description, a commit body or a link names nothing.
 }
 
 surface JiraActivityIntegration {
