@@ -565,6 +565,12 @@ surface CollectionStatus {
         -- Whatever failed, the dashboard shows the last successful result of
         -- every source, how old it is, and which sources failed to refresh.
 
+    @guarantee DetailOnDemand
+        -- The band shows its heading only: where the collection stands, how
+        -- many sources failed, and the refresh. The sources, with their last
+        -- outcome and age, open under it while the operator points at the
+        -- band, and close again when they leave it.
+
     @guarantee RefreshIsAlwaysAvailable
         -- The operator can ask for a collection at any time, inside the
         -- collection window or out of it.

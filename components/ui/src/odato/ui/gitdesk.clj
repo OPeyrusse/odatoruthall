@@ -1,6 +1,7 @@
 (ns odato.ui.gitdesk
-  "What gitdesk shows the operator: four groups of counts, the lists behind
-  them, and one pull request in detail.
+  "What gitdesk shows the operator: the operator's own counts, the tracked
+  members side by side, the lists behind them, and one pull request in
+  detail.
 
   Every group counts from the one snapshot the installation holds, reading the
   classifications as they stand. Nothing here fetches anything: a count that
@@ -73,6 +74,26 @@
      :assigned (filterv #(prs/assigned-to? % operator) open)
      :addressed (filterv #(prs/addressed-for? % operator) open)}))
 
+(def my-work-groups
+  "The four groups of the operator's own business, in the order the dashboard
+  shows them. The slug names the page dedicated to each one."
+  [{:group :authored :slug "authored" :label "authored" :title "Authored"
+    :empty "Nothing you wrote is in flight."}
+   {:group :to-review :slug "to-review" :label "to review" :title "To review"
+    :empty "Nobody is waiting on your review."}
+   {:group :assigned :slug "assigned" :label "assigned" :title "Assigned"
+    :empty "Nothing is assigned to you."}
+   {:group :addressed :slug "addressed" :label "addressed" :title "Addressed"
+    :empty "Nothing has come back to you."}])
+
+(defn my-work-group
+  "The group a page slug names, or nil."
+  [slug]
+  (first (filter #(= slug (:slug %)) my-work-groups)))
+
+(defn- my-work-href [{:keys [slug]}]
+  (str "/gitdesk/my/" slug))
+
 (defn- monitoring
   "The pull requests worth a second look: open too long, argued over, reworked
   too often, or approved and going nowhere."
@@ -107,13 +128,30 @@
     (:repository source)
     (parts/humanise (:kind source))))
 
-(defn- collection-status [sys now-ms]
+(def ^:private collection-heading
+  "px-4 py-3 flex items-center justify-between gap-3")
+
+(def ^:private collection-details
+  ;; Rows animate between 0fr and 1fr. The state being entered sets the
+  ;; duration: opening on hover takes 1s, closing on leave takes 350ms.
+  (str "grid grid-rows-[0fr] transition-[grid-template-rows] duration-350 ease-in "
+       "group-hover:grid-rows-[1fr] group-hover:duration-1000 group-hover:ease-out "
+       "group-has-focus-visible:grid-rows-[1fr] motion-reduce:transition-none"))
+
+(defn- collection-status
+  "The band saying where the collection stands. Only its heading shows; the
+  sources open under it while the pointer is over the band, and close when
+  it leaves. A failed source is still named in the heading."
+  [sys now-ms]
   (let [snapshot (collector/snapshot sys)
-        active (first (collector/active-cycles sys))]
-    [:section {:class parts/card :id "collection-status"}
-     [:div {:class parts/card-heading}
+        active (first (collector/active-cycles sys))
+        failed (count (filter #(= :failed (:last-outcome %)) (:sources snapshot)))]
+    [:section {:class (str parts/card " group") :id "collection-status"}
+     [:div {:class collection-heading}
       [:h2 {:class parts/heading-text} "Collection"]
       [:div {:class "flex items-center gap-2"}
+       (when (pos? failed)
+         (parts/chip (str failed " failed") :red))
        (cond
          (and active (:waiting-on-quota active))
          (parts/chip "waiting on quota" :amber)
@@ -132,55 +170,207 @@
        [:button {:class parts/button
                  :data-on-click "@post('/gitdesk/refresh')"}
         "Refresh"]]]
-     (if (seq (:sources snapshot))
-       [:ul {:class "divide-y divide-slate-200 text-sm dark:divide-slate-800"}
-        (for [source (:sources snapshot)]
-          [:li {:class "flex flex-wrap items-center justify-between gap-2 px-4 py-2"}
-           [:span {:class "font-medium"} (source-label source)]
-           [:span {:class "flex items-center gap-2"}
-            (case (:last-outcome source)
-              :succeeded (parts/chip "refreshed" :green)
-              :failed (parts/chip (str "failed: "
-                                       (parts/humanise (:last-failure-reason source)))
-                                  :red)
-              (parts/chip "never collected" :neutral))
-            (when (:last-success-at source)
-              [:span {:class parts/muted}
-               (parts/relative-time now-ms (:last-success-at source))])]])]
-       (parts/empty-state
-        (if (config/collectable? sys)
-          "Nothing has been collected yet."
-          "Nothing is tracked yet — add a repository and a member in settings.")))]))
+     [:div {:class collection-details}
+      [:div {:class "min-h-0 overflow-hidden"}
+       [:div {:class "border-t border-slate-200 dark:border-slate-800"}
+        (if (seq (:sources snapshot))
+          [:ul {:class "divide-y divide-slate-200 text-sm dark:divide-slate-800"}
+           (for [source (:sources snapshot)]
+             [:li {:class "flex flex-wrap items-center justify-between gap-2 px-4 py-2"}
+              [:span {:class "font-medium"} (source-label source)]
+              [:span {:class "flex items-center gap-2"}
+               (case (:last-outcome source)
+                 :succeeded (parts/chip "refreshed" :green)
+                 :failed (parts/chip (str "failed: "
+                                          (parts/humanise (:last-failure-reason source)))
+                                     :red)
+                 (parts/chip "never collected" :neutral))
+               (when (:last-success-at source)
+                 [:span {:class parts/muted}
+                  (parts/relative-time now-ms (:last-success-at source))])]])]
+          (parts/empty-state
+           (if (config/collectable? sys)
+             "Nothing has been collected yet."
+             "Nothing is tracked yet — add a repository and a member in settings.")))]]]]))
+
+;; ------------------------------------------------------------ collections
+
+(def ^:private list-class
+  "divide-y divide-slate-200 border-t border-slate-200 dark:divide-slate-800 dark:border-slate-800")
+
+(defn- plural [n word]
+  (str n " " word (when (not= 1 n) "s")))
+
+(defn- collection-card
+  "A card listing one collection of pull requests: its heading, how many it
+  holds and how many drafts it does not show, then the pull requests, most
+  recent activity first."
+  [now-ms heading pull-requests empty-message]
+  (let [shown (listed pull-requests)
+        hidden (- (count pull-requests) (count shown))]
+    [:section {:class parts/card}
+     [:div {:class "flex flex-col gap-1 px-4 py-4"}
+      heading
+      [:p {:class parts/muted}
+       (plural (count pull-requests) "pull request")
+       (when (pos? hidden)
+         [:span {:class "italic"}
+          (str " (" (plural hidden "draft") " hidden — show them in settings)")])]]
+     (if (seq shown)
+       [:ul {:class list-class} (map #(pr-row now-ms %) shown)]
+       [:div {:class "border-t border-slate-200 dark:border-slate-800"}
+        (parts/empty-state
+         (if (pos? hidden) "Only drafts here, and drafts are hidden." empty-message))])]))
+
+(def ^:private back-link
+  [:a {:href "/gitdesk" :class (str parts/muted " w-fit hover:underline")} "← gitdesk"])
+
+(def ^:private page-title "text-2xl font-semibold tracking-tight")
+
+(def ^:private arrow
+  [:span {:class "text-emerald-500" :aria-hidden "true"} "▶"])
+
+;; ---------------------------------------------------------------- my work
+
+(def ^:private summary-item
+  (str "group flex flex-col items-center gap-1 rounded-lg px-3 py-3 transition "
+       "hover:bg-slate-100 dark:hover:bg-slate-800/60"))
+
+(def ^:private summary-label
+  (str "flex items-center gap-1.5 text-xs font-medium uppercase tracking-widest "
+       "text-slate-500 dark:text-slate-400"))
+
+(def ^:private summary-count
+  (str "text-4xl font-semibold tabular-nums text-slate-900 group-hover:text-sky-600 "
+       "dark:text-slate-100 dark:group-hover:text-sky-400"))
+
+(defn- my-work-summary
+  "The four counts of the operator's own business. Each one leads to the page
+  that lists its pull requests."
+  [mine]
+  [:section {:class parts/card :id "my-work"}
+   [:div {:class "flex flex-col gap-2 px-4 pt-4 pb-3"}
+    [:h2 {:class page-title} "My work"]
+    [:div {:class "grid grid-cols-2 gap-2 sm:grid-cols-4"}
+     (for [{:keys [group label] :as g} my-work-groups]
+       [:a {:href (my-work-href g) :class summary-item
+            :title (str "The pull requests " label)}
+        [:span {:class summary-label} label arrow]
+        [:span {:class summary-count} (str (count (get mine group)))]])]]])
+
+(defn my-work-page
+  "One group of the operator's own business, in full: every pull request in
+  it, most recent activity first, drafts only when the operator asked for
+  them."
+  [sys {:keys [group title empty]}]
+  (let [now-ms (t/now-ms (:clock sys))
+        operator (access/operator-login sys)]
+    [:div {:id "gitdesk-my-work" :class "flex flex-col gap-4"}
+     (collection-card now-ms
+                      (list back-link [:h1 {:class page-title} title])
+                      (get (my-work operator (collector/pull-requests sys)) group)
+                      (if operator
+                        empty
+                        "No valid GitHub credential, so there is no \"me\" yet."))]))
 
 ;; -------------------------------------------------------------- team work
 
-(def ^:private table-head
-  "text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400")
+(defn tracked-member
+  "The login, when it names a tracked member; nil otherwise."
+  [sys login]
+  (get (:members (config/current sys)) login))
 
-(defn- team-work [in-force pull-requests]
-  [:section {:class parts/card}
-   [:div {:class parts/card-heading}
-    [:h2 {:class parts/heading-text} "Team work"]
-    [:span {:class parts/muted} (str (count (:members in-force)) " tracked")]]
-   (if (seq (:members in-force))
-     [:table {:class "w-full text-sm"}
-      [:thead
-       [:tr {:class table-head}
-        [:th {:class "px-4 py-2 font-medium"} "Member"]
-        [:th {:class "px-4 py-2 text-right font-medium"} "Authored"]
-        [:th {:class "px-4 py-2 text-right font-medium"} "Drafted"]
-        [:th {:class "px-4 py-2 text-right font-medium"} "Assigned"]]]
-      [:tbody {:class "divide-y divide-slate-200 dark:divide-slate-800"}
-       (for [member (sort (:members in-force))]
-         [:tr
-          [:td {:class "px-4 py-2 font-medium"} member]
-          [:td {:class "px-4 py-2 text-right tabular-nums"}
-           (count (filter #(prs/authored-by? % member) pull-requests))]
-          [:td {:class "px-4 py-2 text-right tabular-nums"}
-           (count (filter #(prs/drafted-by? % member) pull-requests))]
-          [:td {:class "px-4 py-2 text-right tabular-nums"}
-           (count (filter #(prs/assigned-to? % member) pull-requests))]])]]
-     (parts/empty-state "No members are tracked yet."))])
+(defn- member-href [member]
+  (str "/gitdesk/member/" member))
+
+(defn- member-work
+  "What a member has in flight: what they wrote, and what was handed to them."
+  [member pull-requests]
+  (let [open (filterv :open? pull-requests)]
+    {:authored (filterv #(prs/authored-by? % member) open)
+     :assigned (filterv #(prs/assigned-to? % member) open)}))
+
+(def ^:private segment-tones
+  "The colours of the former gitdesk, kept so the chart reads as it did."
+  {:in-review "bg-[#fdd77c]"
+   :drafted "bg-[#a17202]"
+   :assigned "bg-[#a0d5ff]"})
+
+(defn- segment [kind n scale]
+  (when (pos? n)
+    [:div {:class (str "h-full " (segment-tones kind))
+           :style (str "width:" (scale n) "%")
+           :title (case kind
+                    :in-review (str n " in review")
+                    :drafted (plural n "draft")
+                    :assigned (str n " assigned"))}]))
+
+(defn- member-bar
+  "One member's bar. Every bar shares the same axis: what they wrote runs to
+  its left, drafts closest to it, and what was handed to them to its right, so
+  the members read against each other at a glance."
+  [{:keys [authored drafted assigned]} max-authored scale]
+  [:div {:class "flex h-6 w-full"}
+   [:div {:style (str "width:" (scale (- max-authored authored)) "%")}]
+   (segment :in-review (- authored drafted) scale)
+   (segment :drafted drafted scale)
+   (segment :assigned assigned scale)])
+
+(defn- legend-item [kind label]
+  [:span {:class "flex items-center gap-1.5"}
+   [:span {:class (str "inline-block h-2.5 w-2.5 rounded-sm " (segment-tones kind))}]
+   label])
+
+(defn- team-work
+  "The tracked members side by side: what each has in flight, authored against
+  assigned. Each member leads to the page listing those pull requests."
+  [in-force pull-requests]
+  (let [stats (for [member (sort (:members in-force))
+                    :let [{:keys [authored assigned]} (member-work member pull-requests)]]
+                {:member member
+                 :authored (count authored)
+                 :drafted (count (filter #(get-in % [:facts :is-draft]) authored))
+                 :assigned (count assigned)})
+        max-authored (reduce max 0 (map :authored stats))
+        max-size (+ max-authored (reduce max 0 (map :assigned stats)))
+        scale #(* 100.0 (/ % (max 1 max-size)))]
+    [:section {:class parts/card :id "team-work"}
+     [:div {:class "flex flex-col gap-3 px-4 pt-4 pb-4"}
+      [:div {:class "flex flex-wrap items-baseline justify-between gap-2"}
+       [:div {:class "flex items-baseline gap-2"}
+        [:h2 {:class page-title} "Team work"]
+        [:span {:class parts/muted} "(authored / assigned)"]]
+       [:div {:class (str "flex flex-wrap items-center gap-3 " parts/faint)}
+        (legend-item :in-review "in review")
+        (legend-item :drafted "drafts")
+        (legend-item :assigned "assigned")]]
+      (if (seq stats)
+        [:ul {:class "flex flex-col gap-2"}
+         (for [{:keys [member authored assigned] :as stat} stats]
+           [:li {:class "grid items-center gap-x-4 gap-y-1 sm:grid-cols-[minmax(0,1fr)_3fr]"}
+            [:a {:href (member-href member)
+                 :class "flex w-fit items-center gap-1.5 text-sm hover:underline"}
+             [:span {:class "font-medium"} (str "@" member)]
+             [:span {:class parts/muted} (str "(" authored " / " assigned ")")]
+             arrow]
+            (member-bar stat max-authored scale)])]
+        (parts/empty-state "No members are tracked yet."))]]))
+
+(defn member-page
+  "One tracked member's pull requests in flight: what they wrote, then what
+  was handed to them."
+  [sys member]
+  (let [now-ms (t/now-ms (:clock sys))
+        {:keys [authored assigned]} (member-work member (collector/pull-requests sys))]
+    [:div {:id "gitdesk-member" :class "flex flex-col gap-4"}
+     [:section {:class parts/card}
+      [:div {:class "flex flex-col gap-1 px-4 py-4"}
+       back-link
+       [:h1 {:class page-title} (str "@" member)]]]
+     (collection-card now-ms [:h2 {:class page-title} "Authored"] authored
+                      (str "Nothing by @" member " is in flight."))
+     (collection-card now-ms [:h2 {:class page-title} "Assigned"] assigned
+                      (str "Nothing is assigned to @" member "."))]))
 
 ;; ------------------------------------------------------------------ the body
 
@@ -191,18 +381,14 @@
         operator (access/operator-login sys)
         in-force (config/current sys)
         pull-requests (collector/pull-requests sys)
-        mine (my-work operator pull-requests)
         watched (monitoring pull-requests)
         train (merge-train pull-requests)]
     [:div {:id "gitdesk" :class "flex flex-col gap-4"}
      (collection-status sys now-ms)
 
-     (parts/stat-group
-      "My work"
-      [{:label "authored" :count (count (:authored mine)) :tone :sky}
-       {:label "to review" :count (count (:to-review mine)) :tone :violet}
-       {:label "assigned" :count (count (:assigned mine)) :tone :neutral}
-       {:label "addressed" :count (count (:addressed mine)) :tone :amber}])
+     (my-work-summary (my-work operator pull-requests))
+
+     (team-work in-force pull-requests)
 
      (parts/stat-group
       "Monitoring"
@@ -217,20 +403,13 @@
        {:label "just merged" :count (count (:just-merged train)) :tone :sky}])
 
      [:div {:class "grid gap-4 lg:grid-cols-2"}
-      (pr-list "My work" now-ms
-               (listed (:authored mine) (:to-review mine)
-                       (:assigned mine) (:addressed mine))
-               (if operator
-                 "Nothing of yours is in flight."
-                 "No valid GitHub credential, so there is no \"me\" yet."))
       (pr-list "Monitoring" now-ms
                (listed (:stuck watched) (:aging watched)
                        (:conflicting watched) (:difficult watched))
                "Nothing worth a second look.")
       (pr-list "Merge train" now-ms
                (listed (:merging train) (:just-merged train))
-               "Nothing on its way in.")
-      (team-work in-force pull-requests)]
+               "Nothing on its way in.")]
 
      (when-not (:show-drafts in-force)
        [:p {:class (str "px-1 " parts/faint)}

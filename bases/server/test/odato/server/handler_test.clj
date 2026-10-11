@@ -64,8 +64,8 @@
     (testing "and shows what was collected once it has been"
       (collector/collect! sys :manual)
       (let [body (:body (GET sys "/gitdesk"))]
-        (is (str/includes? body "Ship it"))
-        (is (str/includes? body "acme/widget #1"))))))
+        (is (str/includes? body "(1 / 0)") "ada's pull request is counted")
+        (is (str/includes? (:body (GET sys "/gitdesk/my/authored")) "acme/widget #1"))))))
 
 (deftest a-refresh-is-a-plain-post
   (let [sys (installation)]
@@ -84,6 +84,32 @@
       (is (= 200 (:status response)))
       (is (str/includes? (:body response) "Ship it")))
     (is (= 404 (:status (GET sys "/gitdesk/pull-request/acme/widget/99"))))))
+
+(deftest each-group-of-my-work-has-its-page
+  (let [sys (installation)]
+    (collector/collect! sys :manual)
+    (testing "the dashboard count leads to it"
+      (is (str/includes? (:body (GET sys "/gitdesk")) "href=\"/gitdesk/my/authored\"")))
+    (let [response (GET sys "/gitdesk/my/authored")]
+      (is (= 200 (:status response)))
+      (is (str/includes? (:body response) "Ship it"))
+      (is (str/includes? (:body response) "/sse/gitdesk/my/authored")))
+    (testing "a group with nothing in it says so"
+      (is (str/includes? (:body (GET sys "/gitdesk/my/to-review"))
+                         "Nobody is waiting on your review.")))
+    (is (= 404 (:status (GET sys "/gitdesk/my/starred"))))))
+
+(deftest each-tracked-member-has-its-page
+  (let [sys (installation)]
+    (collector/collect! sys :manual)
+    (testing "the team chart leads to it"
+      (is (str/includes? (:body (GET sys "/gitdesk")) "href=\"/gitdesk/member/ada\"")))
+    (let [response (GET sys "/gitdesk/member/ada")]
+      (is (= 200 (:status response)))
+      (is (str/includes? (:body response) "Ship it"))
+      (is (str/includes? (:body response) "/sse/gitdesk/member/ada")))
+    (testing "someone who is not tracked has no page"
+      (is (= 404 (:status (GET sys "/gitdesk/member/mallory")))))))
 
 (deftest settings-are-saved-and-a-refusal-says-why
   (let [sys (installation)
