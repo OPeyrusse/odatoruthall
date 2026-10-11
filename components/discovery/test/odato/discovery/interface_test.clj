@@ -159,11 +159,21 @@
         (odato.access.interface/check-connection!
          half :github #(github/whoami (:github half)))
         (is (= :credential-unavailable (:reason (discovery/request-scan! half today))))))
-    (testing "a scan asked for while one is running is refused"
-      (let [first-scan (discovery/request-scan! sys today)]
+    (testing "several days are scanned side by side"
+      (let [first-scan (discovery/request-scan! sys today)
+            second-scan (discovery/request-scan! sys yesterday)]
         (is (:started first-scan))
-        (is (= :already-scanning (:reason (discovery/request-scan! sys yesterday))))
-        (discovery/run-scan! sys (:scan first-scan))))
+        (is (:started second-scan) "another day's scan does not stand in the way")
+        (is (= [today yesterday] (map :day-starts-at (discovery/active-scans sys))))
+        (is (discovery/scanning? sys yesterday))
+        (testing "but a day already being scanned is refused"
+          (is (= :already-scanning (:reason (discovery/request-scan! sys today))))
+          (is (= 2 (count (discovery/active-scans sys))) "and the running one carries on"))
+        (discovery/run-scan! sys (:scan second-scan))
+        (is (not (discovery/scanning? sys yesterday)) "a finished scan stops showing")
+        (is (= (:scan first-scan) (:id (discovery/active-scan sys today))))
+        (discovery/run-scan! sys (:scan first-scan))
+        (is (not (discovery/scanning? sys)))))
     (testing "and a day outside the window is not scanned"
       (is (= :day-outside-window (:reason (discovery/request-scan! sys long-ago)))))))
 

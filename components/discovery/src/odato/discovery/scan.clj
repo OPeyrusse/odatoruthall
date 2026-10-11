@@ -15,38 +15,53 @@
   (cond
     (or (not (access/usable? sys :github)) (not (access/usable? sys :jira)))
     :credential-unavailable
-    (core/scanning? sys) :already-scanning
+    (core/scanning? sys day-starts-at) :already-scanning
     (not (worklog/within-window? sys day-starts-at)) :day-outside-window
     :else nil))
+
+(defonce ^:private requests
+  ;; Asking and starting are one step: two requests for the same day arriving
+  ;; together must not both find it free.
+  (Object.))
+
+(defn- claim-day!
+  "The refusal, or the id of a scan now running on the day."
+  [sys day-starts-at]
+  (locking requests
+    (or (refusal sys day-starts-at)
+        (let [scan-id (str (random-uuid))]
+          (db/transact! (core/volatile* sys)
+                        [{:scan/id scan-id
+                          :scan/day-starts-at day-starts-at
+                          :scan/status :running
+                          :scan/started-at (core/now sys)}])
+          {:scan-id scan-id}))))
 
 (defn request-scan!
   "ScanStarts / ScanNotStarted. Both services are scanned, so both credentials
   are needed: a scan with half the picture would look like a day with half the
-  work on it."
+  work on it. Other days' scans do not stand in the way; a scan of the same
+  day does."
   [sys day-starts-at]
-  (if-let [reason (refusal sys day-starts-at)]
-    (do (core/emit! sys {:type :scan/refused :day day-starts-at :reason reason})
-        {:started false :reason reason})
-    (let [scan-id (str (random-uuid))]
-      ;; The day has to exist before anything can be hung off it: a scan is one
-      ;; of the things that brings a day into being.
-      (worklog/ensure-day! sys day-starts-at)
-      (db/transact! (core/volatile* sys)
-                    [{:scan/id scan-id
-                      :scan/day-starts-at day-starts-at
-                      :scan/status :running
-                      :scan/started-at (core/now sys)}])
-      (doseq [[order {:keys [source service]}] (map-indexed vector core/sources)]
-        (db/transact! (core/volatile* sys)
-                      [{:scan-task/id (str scan-id "|" (name source))
-                        :scan-task/scan [:scan/id scan-id]
-                        :scan-task/source source
-                        :scan-task/service service
-                        :scan-task/status :queued
-                        :scan-task/order order
-                        :scan-task/found-count 0}]))
-      (core/emit! sys {:type :scan/started :day day-starts-at :scan scan-id})
-      {:started true :scan scan-id})))
+  (let [claim (claim-day! sys day-starts-at)]
+    (if (keyword? claim)
+      (do (core/emit! sys {:type :scan/refused :day day-starts-at :reason claim})
+          {:started false :reason claim})
+      (let [scan-id (:scan-id claim)]
+        ;; The day has to exist before anything can be hung off it: a scan is
+        ;; one of the things that brings a day into being.
+        (worklog/ensure-day! sys day-starts-at)
+        (doseq [[order {:keys [source service]}] (map-indexed vector core/sources)]
+          (db/transact! (core/volatile* sys)
+                        [{:scan-task/id (str scan-id "|" (name source))
+                          :scan-task/scan [:scan/id scan-id]
+                          :scan-task/source source
+                          :scan-task/service service
+                          :scan-task/status :queued
+                          :scan-task/order order
+                          :scan-task/found-count 0}]))
+        (core/emit! sys {:type :scan/started :day day-starts-at :scan scan-id})
+        {:started true :scan scan-id}))))
 
 ;; -------------------------------------------------------------- attribution
 

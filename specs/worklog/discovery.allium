@@ -48,6 +48,11 @@
 --     done: it says what Jira says now, and nothing once Jira holds nothing;
 --   * a scan is asked for, one day at a time. Nothing scans on a schedule and
 --     nothing scans a day the operator did not choose.
+--
+-- Several days can be scanned at once -- the operator need not wait for one
+-- day to finish before asking for the next -- but a day is only ever scanned
+-- once at a time: asking again for a day already being scanned changes
+-- nothing.
 
 use "../shared/access.allium" as access
 use "./work-item.allium" as items
@@ -72,7 +77,7 @@ enum SourceOutcome { queued | scanning | succeeded | failed }
 enum ScanRefusal {
     credential_unavailable      -- GitHub or Jira cannot be reached with the
                                 -- credentials in hand
-    | already_scanning          -- a scan is already running
+    | already_scanning          -- that day is already being scanned
     | day_outside_window        -- the day is not one the timesheet shows
 }
 
@@ -243,7 +248,7 @@ rule ScanStarts {
     when: ScanRequested(day)
     let github_access = access/Connection{service: github}
     let jira_access = access/Connection{service: jira}
-    let active = DayScans where status = running
+    let active = DayScans where day = day and status = running
     requires: github_access.is_usable
     requires: jira_access.is_usable
     requires: active.count = 0
@@ -256,7 +261,7 @@ rule ScanNotStarted {
     when: ScanRequested(day)
     let github_access = access/Connection{service: github}
     let jira_access = access/Connection{service: jira}
-    let active = DayScans where status = running
+    let active = DayScans where day = day and status = running
     requires:
         not github_access.is_usable
         or not jira_access.is_usable
@@ -273,8 +278,10 @@ rule ScanNotStarted {
     @guidance
         -- Both services are scanned, so both credentials are needed: a scan
         -- with half the picture would look like a day with half the work on
-        -- it. A scan asked for while one is running is refused; the running
-        -- one carries on.
+        -- it. Other days' scans do not stand in the way: several days are
+        -- scanned side by side, and they share the GitHub budget, each
+        -- waiting on it like any other. A scan asked for a day that is
+        -- already being scanned is refused; the running one carries on.
 }
 
 rule ScanQueuesItsSources {
