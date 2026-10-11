@@ -13,12 +13,14 @@
 -- one duration. What produced it is discovered activity, and it carries no
 -- time of its own.
 --
--- Jira is the authority on what Jira holds. A day scan reads the worklogs the
--- operator already has on that day -- whether this installation put them there
--- or they logged them in Jira itself -- and an entry that holds no time of its
--- own takes them. An entry that *does* hold time the operator typed here keeps
--- it, and says what Jira holds beside it, so the two are never silently added
--- together or silently replaced.
+-- Jira is the authority on what Jira holds. A day scan reads, on each task the
+-- day carries, the worklogs the operator already has on it that day -- whether
+-- this installation put them there or they logged them in Jira itself -- and
+-- an entry that holds no time of its own takes them. An entry that *does* hold
+-- time the operator typed here keeps it, and says what Jira holds beside it, so
+-- the two are never silently added together or silently replaced. Logging time
+-- is not work found: time Jira holds on a task the day does not carry puts
+-- nothing on the day.
 --
 -- Time is drafted here and submitted to Jira on the operator's word: nothing
 -- is written to Jira as a side effect of typing. An entry is therefore always
@@ -309,74 +311,49 @@ rule TimesheetDaysExist {
 -- Rules -- the time Jira already holds
 ------------------------------------------------------------
 
-rule JiraTimeRecorded {
-    -- What Jira holds for the day is replaced all at once by what the scan
-    -- read. An entry the scan did not see time for is an entry Jira holds no
-    -- time for -- a worklog withdrawn in Jira stops counting here too.
-    when: JiraTimeObserved(day, totals)
-    ensures:
-        for entry in day.entries:
-            entry.jira_logged = null
-            entry.jira_worklogs = 0
-        for task_time in totals:
-            JiraTimeOnTask(
-                day: day,
-                key: task_time.issue_key,
-                logged: task_time.logged,
-                worklogs: task_time.worklogs,
-                worklog: task_time.worklog)
-}
-
-rule JiraTimePutsTheTaskOnTheDay {
-    -- Time logged in Jira on a task the day did not carry puts that task on
-    -- the day, with the time already on it: that is what the operator spent,
-    -- and it is already spent.
-    when: JiraTimeOnTask(day, key, logged, worklogs, worklog)
-    let known = items/WorkItem{key: key}
-    let already = WorklogEntry{day: day, work_item: known}
-    requires: exists known
-    requires: not exists already
-    ensures:
-        WorklogEntry.created(
-            day: day,
-            work_item: known,
-            origin: discovered,
-            status: acknowledged,
-            entered_text: duration_text(logged),
-            duration: logged,
-            jira_logged: logged,
-            jira_worklogs: worklogs,
-            jira_worklog_id: worklog,
-            acknowledged_at: now)
-        TaskPutOnDay(day: day, work_item: known, origin: discovered)
-}
-
 rule JiraTimeReadBackOntoTheTask {
-    -- The day already carries the task. What Jira holds is recorded either
-    -- way; whether the entry *takes* it depends on what the operator has
+    -- What Jira holds for one task the day carries, as a scan read it, replaces
+    -- what the last scan read. No worklog is an answer too: an entry Jira holds
+    -- no time for says so -- a worklog withdrawn in Jira stops counting here.
+    -- Whether the entry *takes* Jira's time depends on what the operator has
     -- typed: an entry holding time Jira does not have keeps it, and says both.
-    when: JiraTimeOnTask(day, key, logged, worklogs, worklog)
-    let known = items/WorkItem{key: key}
-    let entry = WorklogEntry{day: day, work_item: known}
-    requires: exists known
+    when: JiraTimeOnTask(day, work_item, logged, worklogs, worklog)
+    let entry = WorklogEntry{day: day, work_item: work_item}
     requires: exists entry
     ensures:
-        entry.jira_logged = logged
-        entry.jira_worklogs = worklogs
-        if entry.takes_jira_time:
-            entry.duration = logged
-            entry.entered_text = duration_text(logged)
-            entry.jira_worklog_id = worklog
-            entry.status = acknowledged
-            entry.acknowledged_at = now
-            entry.last_failure = null
-            TimeReadBackFromJira(entry: entry, logged: logged)
+        if worklogs = 0:
+            entry.jira_logged = null
+            entry.jira_worklogs = 0
+        else:
+            entry.jira_logged = logged
+            entry.jira_worklogs = worklogs
+            if entry.takes_jira_time:
+                entry.duration = logged
+                entry.entered_text = duration_text(logged)
+                entry.jira_worklog_id = worklog
+                entry.status = acknowledged
+                entry.acknowledged_at = now
+                entry.last_failure = null
+                TimeReadBackFromJira(entry: entry, logged: logged)
 
     @guidance
         -- This is the one place a scan writes time, and it writes only what
         -- Jira already holds. It never touches an entry on its way to Jira,
         -- and never overwrites time the operator typed and has not sent: that
         -- entry keeps its own time and reads Jira's beside it.
+}
+
+rule JiraTimeOnATaskTheDayDoesNotCarry {
+    when: JiraTimeOnTask(day, work_item, logged, worklogs, worklog)
+    let entry = WorklogEntry{day: day, work_item: work_item}
+    requires: not exists entry
+    ensures:
+        JiraTimeIgnored(day: day, work_item: work_item)
+
+    @guidance
+        -- Logging time is not work found. A task the day does not carry --
+        -- the operator removed it while the scan read Jira -- stays off the
+        -- day, whatever Jira holds on it.
 }
 
 ------------------------------------------------------------
@@ -585,11 +562,12 @@ surface JiraWorklogIntegration {
         -- never logged twice for the same task on the same day.
 
     @guarantee WhatJiraHoldsIsReadBack
-        -- A day knows the time Jira holds on it, whoever put it there. Time
-        -- the operator logged from Jira itself is on the timesheet after a
-        -- scan, against its task, counted in the day's total, and marked as
-        -- Jira's -- rather than the day reading as empty because this
-        -- installation was not the one that wrote it.
+        -- A day knows the time Jira holds on the tasks it carries, whoever put
+        -- it there. Time the operator logged from Jira itself is on the
+        -- timesheet after a scan, against its task, counted in the day's
+        -- total, and marked as Jira's -- rather than the task reading as empty
+        -- because this installation was not the one that wrote it. A worklog
+        -- on a task the day does not carry puts nothing on the day.
 
     @guarantee ReadingIsNotWriting
         -- Reading what Jira holds writes nothing to Jira. A worklog read back
