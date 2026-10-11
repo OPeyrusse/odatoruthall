@@ -128,13 +128,30 @@
     (:repository source)
     (parts/humanise (:kind source))))
 
-(defn- collection-status [sys now-ms]
+(def ^:private collection-heading
+  "px-4 py-3 flex items-center justify-between gap-3")
+
+(def ^:private collection-details
+  ;; Rows animate between 0fr and 1fr. The state being entered sets the
+  ;; duration: opening on hover takes 1s, closing on leave takes 350ms.
+  (str "grid grid-rows-[0fr] transition-[grid-template-rows] duration-350 ease-in "
+       "group-hover:grid-rows-[1fr] group-hover:duration-1000 group-hover:ease-out "
+       "group-has-focus-visible:grid-rows-[1fr] motion-reduce:transition-none"))
+
+(defn- collection-status
+  "The band saying where the collection stands. Only its heading shows; the
+  sources open under it while the pointer is over the band, and close when
+  it leaves. A failed source is still named in the heading."
+  [sys now-ms]
   (let [snapshot (collector/snapshot sys)
-        active (first (collector/active-cycles sys))]
-    [:section {:class parts/card :id "collection-status"}
-     [:div {:class parts/card-heading}
+        active (first (collector/active-cycles sys))
+        failed (count (filter #(= :failed (:last-outcome %)) (:sources snapshot)))]
+    [:section {:class (str parts/card " group") :id "collection-status"}
+     [:div {:class collection-heading}
       [:h2 {:class parts/heading-text} "Collection"]
       [:div {:class "flex items-center gap-2"}
+       (when (pos? failed)
+         (parts/chip (str failed " failed") :red))
        (cond
          (and active (:waiting-on-quota active))
          (parts/chip "waiting on quota" :amber)
@@ -153,25 +170,28 @@
        [:button {:class parts/button
                  :data-on-click "@post('/gitdesk/refresh')"}
         "Refresh"]]]
-     (if (seq (:sources snapshot))
-       [:ul {:class "divide-y divide-slate-200 text-sm dark:divide-slate-800"}
-        (for [source (:sources snapshot)]
-          [:li {:class "flex flex-wrap items-center justify-between gap-2 px-4 py-2"}
-           [:span {:class "font-medium"} (source-label source)]
-           [:span {:class "flex items-center gap-2"}
-            (case (:last-outcome source)
-              :succeeded (parts/chip "refreshed" :green)
-              :failed (parts/chip (str "failed: "
-                                       (parts/humanise (:last-failure-reason source)))
-                                  :red)
-              (parts/chip "never collected" :neutral))
-            (when (:last-success-at source)
-              [:span {:class parts/muted}
-               (parts/relative-time now-ms (:last-success-at source))])]])]
-       (parts/empty-state
-        (if (config/collectable? sys)
-          "Nothing has been collected yet."
-          "Nothing is tracked yet — add a repository and a member in settings.")))]))
+     [:div {:class collection-details}
+      [:div {:class "min-h-0 overflow-hidden"}
+       [:div {:class "border-t border-slate-200 dark:border-slate-800"}
+        (if (seq (:sources snapshot))
+          [:ul {:class "divide-y divide-slate-200 text-sm dark:divide-slate-800"}
+           (for [source (:sources snapshot)]
+             [:li {:class "flex flex-wrap items-center justify-between gap-2 px-4 py-2"}
+              [:span {:class "font-medium"} (source-label source)]
+              [:span {:class "flex items-center gap-2"}
+               (case (:last-outcome source)
+                 :succeeded (parts/chip "refreshed" :green)
+                 :failed (parts/chip (str "failed: "
+                                          (parts/humanise (:last-failure-reason source)))
+                                     :red)
+                 (parts/chip "never collected" :neutral))
+               (when (:last-success-at source)
+                 [:span {:class parts/muted}
+                  (parts/relative-time now-ms (:last-success-at source))])]])]
+          (parts/empty-state
+           (if (config/collectable? sys)
+             "Nothing has been collected yet."
+             "Nothing is tracked yet — add a repository and a member in settings.")))]]]]))
 
 ;; ------------------------------------------------------------ collections
 
