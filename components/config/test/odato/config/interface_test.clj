@@ -11,8 +11,7 @@
    :window {:opens-hour 5 :closes-hour 21
             :active-days #{:monday :tuesday :wednesday :thursday :friday}}
    :thresholds {:aging-ms (t/days 15) :comments 15 :commits 10
-                :failing-commits 10 :merged-window-ms (t/days 3)}
-   :show-drafts false})
+                :failing-commits 10 :merged-window-ms (t/days 3)}})
 
 (deftest a-fresh-installation-starts-on-the-reference-defaults
   (let [sys (testing*/system)
@@ -24,7 +23,6 @@
     (is (= {:aging-ms (t/days 15) :comments 15 :commits 10
             :failing-commits 10 :merged-window-ms (t/days 3)}
            (:thresholds c)))
-    (is (false? (:show-drafts c)))
     (is (not (config/collectable? sys)) "with nothing to collect yet")))
 
 (deftest saving-says-when-it-takes-effect

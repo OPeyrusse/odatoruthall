@@ -129,10 +129,6 @@ entity PullRequest {
         and facts.merged_at != null
         and now - facts.merged_at <= settings/current.thresholds.merged_window
 
-    -- Whether this pull request is shown at all: drafts are always counted,
-    -- and only listed when the operator asks for them.
-    is_listable: not facts.is_draft or settings/current.show_drafts
-
     ------------------------------------------------------------
     -- Slices by person
     ------------------------------------------------------------

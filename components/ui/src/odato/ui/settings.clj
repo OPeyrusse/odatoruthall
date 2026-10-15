@@ -110,10 +110,7 @@
       (field {:label "Merged window" :name "merged-days" :type "number"
               :value (quot (:merged-window-ms thresholds) (t/days 1)) :suffix "days"
               :hint "Merged within this, and it is still worth showing."})
-      [:label {:class "flex items-center gap-2 self-end pb-2"}
-       [:input {:type "checkbox" :name "show-drafts" :value "true"
-                :class "accent-sky-600" :checked (:show-drafts in-force)}]
-       [:span {:class "text-sm font-medium"} "Show drafts in the lists"]]]]))
+]]))
 
 (defn body
   "`outcome` is what the last save answered, so a refused save says which fault
@@ -152,5 +149,4 @@
                   :comments (number "comment-threshold" 15)
                   :commits (number "commit-threshold" 10)
                   :failing-commits (number "failing-commits" 10)
-                  :merged-window-ms (* (number "merged-days" 3) (t/days 1))}
-     :show-drafts (boolean (get params "show-drafts"))}))
+                  :merged-window-ms (* (number "merged-days" 3) (t/days 1))}}))

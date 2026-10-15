@@ -61,18 +61,26 @@
         (is (str/includes? (ui/gitdesk-page fresh) "no github token"))
         (is (str/includes? (ui/gitdesk-page fresh) "no jira token"))))))
 
-(deftest drafts-are-counted-and-hidden
+(defn- shown-by
+  "The signal the row titled `title` waits on to be shown, or nil when it is
+  listed outright."
+  [body title]
+  (let [row (re-find (re-pattern (str "<li[^>]*>(?:(?!</li>).)*" title)) body)]
+    (second (re-find #"data-show=\"\$(\w+)\"" (str row)))))
+
+(deftest drafts-are-counted-and-hidden-behind-a-toggle
   (let [sys (installation)]
     (collector/collect! sys :manual)
     (let [body (ui/gitdesk-fragment sys)]
       (is (str/includes? body "Ship it"))
-      (is (str/includes? body "Drafts are counted above and hidden")))
+      (is (not (str/includes? body "Drafts are counted above")) "no setting to go and change"))
     (let [body (ui/member-fragment sys "ada")]
-      (is (str/includes? body "Ship it"))
-      (is (not (str/includes? body "A sketch")) "the draft is not listed"))
-    (testing "until the operator asks for them"
-      (config/save! sys (assoc (config/current sys) :show-drafts true))
-      (is (str/includes? (ui/member-fragment sys "ada") "A sketch")))))
+      (is (nil? (shown-by body "Ship it")))
+      (is (= "draftsAuthored" (shown-by body "A sketch")) "the draft waits on the toggle")
+      (is (str/includes? body "{draftsAuthored: false}") "which is off")
+      (is (str/includes? body "$draftsAuthored = !$draftsAuthored"))
+      (is (str/includes? body "Show 1 draft"))
+      (is (not (str/includes? body "draftsAssigned = !")) "no toggle without drafts"))))
 
 (deftest a-group-of-my-work-counts-its-drafts-and-hides-them
   (let [sys (installation)
@@ -80,15 +88,11 @@
     (collector/collect! sys :manual)
     (let [body (ui/my-work-fragment sys authored)]
       (is (str/includes? body "id=\"gitdesk-my-work\""))
-      (is (str/includes? body "2 pull requests"))
-      (is (str/includes? body "Ship it"))
-      (is (not (str/includes? body "A sketch")) "the draft is not listed")
-      (is (str/includes? body "1 draft hidden")))
-    (testing "until the operator asks for them"
-      (config/save! sys (assoc (config/current sys) :show-drafts true))
-      (let [body (ui/my-work-fragment sys authored)]
-        (is (str/includes? body "A sketch"))
-        (is (not (str/includes? body "hidden")))))
+      (is (str/includes? body "2 pull requests · 1 draft"))
+      (is (nil? (shown-by body "Ship it")))
+      (is (= "draftsListed" (shown-by body "A sketch")) "the draft is hidden")
+      (is (str/includes? body "display: none") "even before the toggle runs")
+      (is (str/includes? body "Show 1 draft")))
     (is (nil? (ui/my-work-group "starred")))))
 
 (deftest the-team-chart-counts-what-each-member-has-in-flight
@@ -106,7 +110,7 @@
       (let [body (ui/member-fragment sys "ada")]
         (is (str/includes? body "id=\"gitdesk-member\""))
         (is (str/includes? body "Ship it"))
-        (is (not (str/includes? body "A sketch")))
+          (is (= "draftsAuthored" (shown-by body "A sketch")))
         (is (str/includes? body "Nothing is assigned to @ada."))))
     (is (nil? (ui/tracked-member sys "mallory")))))
 
@@ -126,15 +130,13 @@
                                         "active-days" ["monday" "friday"]
                                         "aging-days" "10" "comment-threshold" "12"
                                         "commit-threshold" "8" "failing-commits" "6"
-                                        "merged-days" "2"
-                                        "show-drafts" "true"})]
+                                        "merged-days" "2"})]
     (is (= #{{:owner "acme" :name "widget"} {:owner "acme" :name "gear"}}
            (:repositories proposal)))
     (is (= #{"ada" "grace"} (:members proposal)))
     (is (= (t/minutes 45) (:refresh-cadence-ms proposal)))
     (is (= #{:monday :friday} (get-in proposal [:window :active-days])))
     (is (= (t/days 10) (get-in proposal [:thresholds :aging-ms])))
-    (is (true? (:show-drafts proposal)))
     (is (nil? (config/validate proposal)))))
 
 (deftest the-timesheet-says-what-it-shows

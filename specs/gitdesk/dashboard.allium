@@ -7,7 +7,8 @@
 -- classifications as they stand. Nothing here fetches anything: a count that
 -- changes because a threshold changed is the same snapshot, classified again.
 --
--- Drafts are always counted and only listed when the operator asks for them.
+-- Drafts are always counted and only listed when the operator asks for them:
+-- every list carries its own toggle, off whenever the page is opened.
 -- Lists are ordered by most recent activity first.
 
 use "../shared/access.allium" as access
@@ -65,13 +66,13 @@ surface MyWorkGroupPage {
 
     context group: List<prs/PullRequest>
 
-    let listed = by_recent_activity(group) where is_listable
-    let hidden_drafts = group where facts.is_draft and not is_listable
+    let listed = by_recent_activity(group)
+    let drafts = group where facts.is_draft
 
     exposes:
         operator.account_login
         group.count
-        hidden_drafts.count
+        drafts.count
         for pull_request in listed:
             pull_request.repository
             pull_request.number
@@ -89,8 +90,14 @@ surface MyWorkGroupPage {
 
     @guarantee DraftsAreCountedAndHidden
         -- The page counts every pull request in the group, drafts included,
-        -- says how many drafts it does not list, and lists them only when the
-        -- operator has asked to see drafts.
+        -- says how many of them are drafts, and lists those only once the
+        -- operator flips the page's draft toggle.
+
+    @guarantee DraftToggleBelongsToThePage
+        -- The toggle shows or hides the drafts in place: flipping it fetches
+        -- nothing and saves nothing. It is off whenever the page is opened,
+        -- and stays as the operator left it while a collection updates the
+        -- page.
 }
 
 surface Monitoring {
@@ -106,7 +113,6 @@ surface Monitoring {
     let difficult = watched where is_difficult
 
     let listed = by_recent_activity(stuck + aging + conflicting + difficult)
-        where is_listable
 
     exposes:
         operator.account_login
@@ -135,6 +141,10 @@ surface Monitoring {
     @guarantee ThresholdsApplyOnSight
         -- These groups are recomputed from the snapshot in hand whenever the
         -- thresholds change; no collection is needed to see the new grouping.
+
+    @guarantee DraftsAreCountedAndHidden
+        -- Drafts count towards every group, and are listed only once the
+        -- operator flips the list's draft toggle, as on MyWorkGroupPage.
 }
 
 surface MergeTrain {
@@ -146,7 +156,7 @@ surface MergeTrain {
     let merging = watched where is_merging
     let just_merged = watched where is_recently_merged
 
-    let listed = by_recent_activity(merging + just_merged) where is_listable
+    let listed = by_recent_activity(merging + just_merged)
 
     exposes:
         operator.account_login
@@ -215,8 +225,8 @@ surface MemberWork {
 
     let authored = collection/snapshot.authored_by(member) where is_open
     let assigned = collection/snapshot.assigned_to(member) where is_open
-    let listed_authored = by_recent_activity(authored) where is_listable
-    let listed_assigned = by_recent_activity(assigned) where is_listable
+    let listed_authored = by_recent_activity(authored)
+    let listed_assigned = by_recent_activity(assigned)
 
     exposes:
         operator.account_login
@@ -251,8 +261,8 @@ surface MemberWork {
         -- The page exists for a tracked member only; any other login has none.
 
     @guarantee DraftsAreCountedAndHidden
-        -- Drafts count towards both groups, and are listed only when the
-        -- operator has asked to see drafts.
+        -- Drafts count towards both groups, and each group lists its own only
+        -- once the operator flips its draft toggle, as on MyWorkGroupPage.
 }
 
 surface PullRequestDetail {

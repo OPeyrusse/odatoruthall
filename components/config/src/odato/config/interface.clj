@@ -9,10 +9,10 @@
     collection settings    tracked repositories, tracked members, cadence, the
                            collection window. They shape the next collection
                            and nothing else.
-    presentation settings  the classification thresholds and the draft
-                           preference. They apply to the snapshot already in
-                           hand, so changing one reclassifies what is on screen
-                           without fetching anything.
+    presentation settings  the classification thresholds. They apply to the
+                           snapshot already in hand, so changing one
+                           reclassifies what is on screen without fetching
+                           anything.
 
   Saving never starts a collection."
   (:require [odato.config.core :as core]))

@@ -15,8 +15,7 @@
    :comment-threshold 15
    :commit-threshold 10
    :failing-commits 10
-   :merged-window-ms (t/days 3)
-   :show-drafts false})
+   :merged-window-ms (t/days 3)})
 
 (def day-order [:monday :tuesday :wednesday :thursday :friday :saturday :sunday])
 
@@ -76,7 +75,6 @@
                                        (:failing-commits defaults))
                   :merged-window-ms (or (:config/merged-window-ms row)
                                         (:merged-window-ms defaults))}
-     :show-drafts (boolean (:config/show-drafts row))
      :updated-at (:config/updated-at row)}))
 
 (defn collectable? [sys]
@@ -95,8 +93,7 @@
                     :config/comment-threshold (:comment-threshold defaults)
                     :config/commit-threshold (:commit-threshold defaults)
                     :config/failing-commits (:failing-commits defaults)
-                    :config/merged-window-ms (:merged-window-ms defaults)
-                    :config/show-drafts (:show-drafts defaults)}]))
+                    :config/merged-window-ms (:merged-window-ms defaults)}]))
   sys)
 
 ;; ---------------------------------------------------------------- writing
@@ -121,14 +118,12 @@
   (if-let [fault (validate proposal)]
     {:ok false :fault fault :config (current sys)}
     (let [before (current sys)
-          {:keys [repositories members refresh-cadence-ms window thresholds
-                  show-drafts]} proposal
+          {:keys [repositories members refresh-cadence-ms window thresholds]} proposal
           collection-changed? (or (not= repositories (:repositories before))
                                   (not= members (:members before))
                                   (not= refresh-cadence-ms (:refresh-cadence-ms before))
                                   (not= window (:window before)))
-          presentation-changed? (or (not= thresholds (:thresholds before))
-                                    (not= (boolean show-drafts) (:show-drafts before)))]
+          presentation-changed? (not= thresholds (:thresholds before))]
       (db/put!
        (conn sys) :config/scope :installation
        {:config/repositories (mapv repository-key repositories)
@@ -142,7 +137,6 @@
         :config/commit-threshold (long (:commits thresholds))
         :config/failing-commits (long (:failing-commits thresholds))
         :config/merged-window-ms (long (:merged-window-ms thresholds))
-        :config/show-drafts (boolean show-drafts)
         :config/updated-at (now sys)})
       (let [after (current sys)]
         (when collection-changed?

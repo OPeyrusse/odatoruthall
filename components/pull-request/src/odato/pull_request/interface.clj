@@ -30,7 +30,7 @@
   Adds: `:head-commit` `:head-check` `:decisive-reviews` `:approvals`
   `:change-requests` `:approved?` `:awaiting-rereview` `:open?` `:age`
   `:aging?` `:conflicting?` `:difficult?` `:stuck?` `:merging?`
-  `:recently-merged?` `:listable?`."
+  `:recently-merged?`."
   [pull-request config now-ms]
   (core/view pull-request config now-ms))
 

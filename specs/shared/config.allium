@@ -13,10 +13,13 @@
 --   collection settings    -- tracked repositories, tracked members, cadence,
 --                             collection window. They shape the next
 --                             collection and nothing else.
---   presentation settings  -- classification thresholds, the draft preference.
---                             They apply to the snapshot already in hand, so
---                             changing one reclassifies what is on screen
---                             without fetching anything.
+--   presentation settings  -- classification thresholds. They apply to the
+--                             snapshot already in hand, so changing one
+--                             reclassifies what is on screen without fetching
+--                             anything.
+--
+-- Whether drafts are listed is not a setting: each list carries its own toggle
+-- (see the dashboard).
 --
 -- Saving the configuration never starts a collection.
 
@@ -82,7 +85,6 @@ entity Configuration {
 
     -- Presentation settings
     thresholds: ClassificationThresholds
-    show_drafts: Boolean
 
     updated_at: Timestamp?
 
@@ -146,8 +148,7 @@ default Configuration current = {
         commits: config.default_commit_threshold,
         failing_commits: config.default_failing_commit_window,
         merged_window: config.default_merged_window
-    },
-    show_drafts: false
+    }
 }
 
 ------------------------------------------------------------
@@ -155,16 +156,14 @@ default Configuration current = {
 ------------------------------------------------------------
 
 rule ConfigurationSaved {
-    when: OperatorSavesConfiguration(repositories, members, cadence, window, thresholds, drafts)
+    when: OperatorSavesConfiguration(repositories, members, cadence, window, thresholds)
 
     let collection_settings_changed =
         repositories != current.tracked_repositories
         or members != current.tracked_members
         or cadence != current.refresh_cadence
         or window != current.collection_window
-    let presentation_settings_changed =
-        thresholds != current.thresholds
-        or drafts != current.show_drafts
+    let presentation_settings_changed = thresholds != current.thresholds
 
     requires: repositories.count > 0
     requires: members.count > 0
@@ -179,7 +178,6 @@ rule ConfigurationSaved {
         current.refresh_cadence = cadence
         current.collection_window = window
         current.thresholds = thresholds
-        current.show_drafts = drafts
         current.updated_at = now
         if collection_settings_changed:
             CollectionSettingsChanged(configuration: current)
@@ -193,7 +191,7 @@ rule ConfigurationSaved {
 }
 
 rule ConfigurationRefused {
-    when: OperatorSavesConfiguration(repositories, members, cadence, window, thresholds, drafts)
+    when: OperatorSavesConfiguration(repositories, members, cadence, window, thresholds)
 
     requires:
         repositories.count = 0
@@ -244,7 +242,6 @@ surface Settings {
         current.refresh_cadence
         current.collection_window
         current.thresholds
-        current.show_drafts
         current.updated_at
 
     provides:
@@ -253,8 +250,7 @@ surface Settings {
             current.tracked_members,
             current.refresh_cadence,
             current.collection_window,
-            current.thresholds,
-            current.show_drafts)
+            current.thresholds)
 
     @guarantee ConfigurationOutlivesTheProcess
         -- The configuration in force after a restart is the one last saved.
