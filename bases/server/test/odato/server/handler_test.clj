@@ -121,8 +121,7 @@
     (let [in-force (config/current sys)]
       (is (= (t/minutes 30) (:refresh-cadence-ms in-force)))
       (is (= 12 (get-in in-force [:thresholds :comments])))
-      (is (= #{:monday} (get-in in-force [:window :active-days])))
-      (is (false? (:show-drafts in-force))))
+      (is (= #{:monday} (get-in in-force [:window :active-days]))))
     (testing "a save with nothing tracked is refused, and changes nothing"
       (let [response (POST sys "/settings" (str/replace form "repositories=acme%2Fwidget"
                                                         "repositories="))]

@@ -104,8 +104,7 @@
                          :refresh-cadence-ms (t/minutes 60)
                          :window {:opens-hour 5 :closes-hour 21
                                   :active-days #{:tuesday}}
-                         :thresholds (:thresholds (config/current sys))
-                         :show-drafts false})
+                         :thresholds (:thresholds (config/current sys))})
       (is (= :credential-unavailable (:reason (collector/request-collection! sys :manual))))))
   (testing "nothing tracked"
     (let [sys (testing*/connected!)]

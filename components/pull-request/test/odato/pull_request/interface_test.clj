@@ -9,8 +9,7 @@
 
 (def in-force
   {:thresholds {:aging-ms (t/days 15) :comments 15 :commits 10
-                :failing-commits 10 :merged-window-ms (t/days 3)}
-   :show-drafts false})
+                :failing-commits 10 :merged-window-ms (t/days 3)}})
 
 (defn- commits [n rollup]
   (vec (for [i (range n)]
@@ -125,12 +124,6 @@
     (is (not (:conflicting? (prs/view pr in-force now))))
     (is (:conflicting? (prs/view pr (assoc-in in-force [:thresholds :comments] 10) now))
         "no collection needed")))
-
-(deftest drafts-are-counted-and-hidden
-  (is (not (:listable? (view {:is-draft true}))))
-  (is (:listable? (prs/view (pull-request {:is-draft true})
-                            (assoc in-force :show-drafts true) now)))
-  (is (:listable? (view {}))))
 
 (deftest of-interest-is-the-operator-or-a-tracked-member
   (let [tracked {:members #{"grace"} :operator "ada"}]

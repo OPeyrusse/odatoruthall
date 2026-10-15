@@ -61,7 +61,7 @@
 ;; ----------------------------------------------------------- classification
 
 (defn view [{:keys [repository number facts first-seen-at last-seen-at]} config now-ms]
-  (let [{:keys [thresholds show-drafts]} config
+  (let [{:keys [thresholds]} config
         commits (:commits facts)
         head (first commits)
         decisive (latest-review-per-reviewer (:reviews facts))
@@ -113,10 +113,7 @@
      :recently-merged? (and (= :merged (:state facts))
                             (some? (:merged-at facts))
                             (<= (- (long now-ms) (long (:merged-at facts)))
-                                (long (:merged-window-ms thresholds))))
-
-     ;; Drafts are always counted, and only listed when the operator asks.
-     :listable? (or (not (:is-draft facts)) (boolean show-drafts))}))
+                                (long (:merged-window-ms thresholds))))}))
 
 (defn of-interest? [facts members operator]
   (let [members (set members)

@@ -96,8 +96,8 @@ entity Snapshot {
     oldest_success_at: oldest(collected_sources -> last_success_at)
 
     -- The slices the dashboard counts. They read the snapshot as it stands,
-    -- which is the whole point: a threshold or draft preference changed
-    -- between two reads changes what they answer.
+    -- which is the whole point: a threshold changed between two reads
+    -- changes what they answer.
     authored_by(login): collected_pull_requests where authored_by(login)
     assigned_to(login): collected_pull_requests where assigned_to(login)
     drafted_by(login): collected_pull_requests

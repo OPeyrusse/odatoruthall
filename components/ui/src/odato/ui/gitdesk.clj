@@ -32,12 +32,46 @@
    (when (:recently-merged? pull-request) (parts/chip "merged" :sky))
    (when (get-in pull-request [:facts :is-draft]) (parts/chip "draft" :neutral))))
 
+(def ^:private separated "border-t border-slate-200 dark:border-slate-800")
+
 (def ^:private row-class
   (str "flex flex-col gap-1 px-4 py-3 transition hover:bg-slate-50 "
-       "dark:hover:bg-slate-800/60"))
+       "dark:hover:bg-slate-800/60 " separated))
 
-(defn- pr-row [now-ms pull-request]
-  [:li {:class row-class}
+(defn- draft? [pull-request]
+  (boolean (get-in pull-request [:facts :is-draft])))
+
+(defn- plural [n word]
+  (str n " " word (when (not= 1 n) "s")))
+
+;; ------------------------------------------------------------------ drafts
+;;
+;; Drafts are always counted, and listed only once the operator asks for them.
+;; Each list carries its own toggle: a Datastar signal, off whenever the page
+;; is opened. It lives in the page, so flipping it fetches nothing, and it is
+;; declared only if missing, so a collection patching the list in place leaves
+;; it as the operator set it.
+
+(defn- drafts-signal
+  "The attribute declaring a list's toggle, off."
+  [signal]
+  {:data-signals__ifmissing (str "{" signal ": false}")})
+
+(defn- drafts-toggle
+  "The button showing or hiding a list's drafts, when it has any."
+  [signal pull-requests]
+  (let [n (count (filter draft? pull-requests))]
+    (when (pos? n)
+      [:button {:type "button" :class parts/button
+                :data-on-click (str "$" signal " = !$" signal)
+                :data-text (str "$" signal " ? 'Hide drafts' : 'Show " (plural n "draft") "'")}
+       (str "Show " (plural n "draft"))])))
+
+(defn- pr-row [now-ms signal pull-request]
+  [:li (cond-> {:class row-class}
+         ;; Hidden before Datastar runs too, so a draft is never listed unasked.
+         (draft? pull-request) (assoc :style "display: none"
+                                      :data-show (str "$" signal)))
    [:div {:class "flex flex-wrap items-baseline gap-x-2 gap-y-1"}
     [:a {:href (pr-href pull-request)
          :class "font-medium text-slate-900 hover:underline dark:text-slate-100"}
@@ -52,15 +86,28 @@
     (when (seq (:change-requests pull-request)) (parts/chip "changes requested" :amber))
     (classification-chips pull-request)]])
 
-(defn- pr-list [title now-ms pull-requests empty-message]
-  [:section {:class parts/card}
-   [:div {:class parts/card-heading}
+(defn- pr-rows
+  "A list's pull requests, drafts hidden until its toggle shows them, then what
+  to say when nothing else is in it. Every row carries its own top border, so
+  the hidden ones leave no stray line behind."
+  [now-ms signal pull-requests empty-message]
+  (let [only-drafts? (and (seq pull-requests) (every? draft? pull-requests))]
+    (list
+     (when (seq pull-requests)
+       [:ul (map #(pr-row now-ms signal %) pull-requests)])
+     (when-not (some (complement draft?) pull-requests)
+       [:div (cond-> {:class separated}
+               only-drafts? (assoc :data-show (str "!$" signal)))
+        (parts/empty-state (if only-drafts? "Only drafts here." empty-message))]))))
+
+(defn- pr-list [title signal now-ms pull-requests empty-message]
+  [:section (merge {:class parts/card} (drafts-signal signal))
+   [:div {:class "px-4 py-3 flex items-center justify-between gap-3"}
     [:h2 {:class parts/heading-text} title]
-    [:span {:class parts/muted} (str (count pull-requests))]]
-   (if (seq pull-requests)
-     [:ul {:class "divide-y divide-slate-200 dark:divide-slate-800"}
-      (map #(pr-row now-ms %) pull-requests)]
-     (parts/empty-state empty-message))])
+    [:div {:class "flex items-center gap-2"}
+     (drafts-toggle signal pull-requests)
+     [:span {:class parts/muted} (str (count pull-requests))]]]
+   (pr-rows now-ms signal pull-requests empty-message)])
 
 ;; ------------------------------------------------------------- the surfaces
 
@@ -110,14 +157,12 @@
    :just-merged (filterv :recently-merged? pull-requests)})
 
 (defn- listed
-  "The lists the dashboard shows: most recent activity first, each pull request
-  once however many groups claim it, and drafts only when the operator has
-  asked for them."
+  "The lists the dashboard shows: most recent activity first, and each pull
+  request once however many groups claim it."
   [& groups]
   (->> (apply concat groups)
        (reduce (fn [acc pull-request] (assoc acc (:ident pull-request) pull-request)) {})
        vals
-       (filter :listable?)
        prs/by-recent-activity
        vec))
 
@@ -195,32 +240,22 @@
 
 ;; ------------------------------------------------------------ collections
 
-(def ^:private list-class
-  "divide-y divide-slate-200 border-t border-slate-200 dark:divide-slate-800 dark:border-slate-800")
-
-(defn- plural [n word]
-  (str n " " word (when (not= 1 n) "s")))
-
 (defn- collection-card
   "A card listing one collection of pull requests: its heading, how many it
-  holds and how many drafts it does not show, then the pull requests, most
-  recent activity first."
-  [now-ms heading pull-requests empty-message]
-  (let [shown (listed pull-requests)
-        hidden (- (count pull-requests) (count shown))]
-    [:section {:class parts/card}
+  holds and how many of them are drafts, with the toggle showing those, then
+  the pull requests, most recent activity first."
+  [now-ms signal heading pull-requests empty-message]
+  (let [pull-requests (listed pull-requests)
+        drafts (count (filter draft? pull-requests))]
+    [:section (merge {:class parts/card} (drafts-signal signal))
      [:div {:class "flex flex-col gap-1 px-4 py-4"}
       heading
-      [:p {:class parts/muted}
-       (plural (count pull-requests) "pull request")
-       (when (pos? hidden)
-         [:span {:class "italic"}
-          (str " (" (plural hidden "draft") " hidden — show them in settings)")])]]
-     (if (seq shown)
-       [:ul {:class list-class} (map #(pr-row now-ms %) shown)]
-       [:div {:class "border-t border-slate-200 dark:border-slate-800"}
-        (parts/empty-state
-         (if (pos? hidden) "Only drafts here, and drafts are hidden." empty-message))])]))
+      [:div {:class "flex flex-wrap items-center justify-between gap-2"}
+       [:p {:class parts/muted}
+        (plural (count pull-requests) "pull request")
+        (when (pos? drafts) (str " · " (plural drafts "draft")))]
+       (drafts-toggle signal pull-requests)]]
+     (pr-rows now-ms signal pull-requests empty-message)]))
 
 (def ^:private back-link
   [:a {:href "/gitdesk" :class (str parts/muted " w-fit hover:underline")} "← gitdesk"])
@@ -260,13 +295,12 @@
 
 (defn my-work-page
   "One group of the operator's own business, in full: every pull request in
-  it, most recent activity first, drafts only when the operator asked for
-  them."
+  it, most recent activity first, drafts once the operator shows them."
   [sys {:keys [group title empty]}]
   (let [now-ms (t/now-ms (:clock sys))
         operator (access/operator-login sys)]
     [:div {:id "gitdesk-my-work" :class "flex flex-col gap-4"}
-     (collection-card now-ms
+     (collection-card now-ms "draftsListed"
                       (list back-link [:h1 {:class page-title} title])
                       (get (my-work operator (collector/pull-requests sys)) group)
                       (if operator
@@ -367,9 +401,9 @@
       [:div {:class "flex flex-col gap-1 px-4 py-4"}
        back-link
        [:h1 {:class page-title} (str "@" member)]]]
-     (collection-card now-ms [:h2 {:class page-title} "Authored"] authored
+     (collection-card now-ms "draftsAuthored" [:h2 {:class page-title} "Authored"] authored
                       (str "Nothing by @" member " is in flight."))
-     (collection-card now-ms [:h2 {:class page-title} "Assigned"] assigned
+     (collection-card now-ms "draftsAssigned" [:h2 {:class page-title} "Assigned"] assigned
                       (str "Nothing is assigned to @" member "."))]))
 
 ;; ------------------------------------------------------------------ the body
@@ -403,17 +437,13 @@
        {:label "just merged" :count (count (:just-merged train)) :tone :sky}])
 
      [:div {:class "grid gap-4 lg:grid-cols-2"}
-      (pr-list "Monitoring" now-ms
+      (pr-list "Monitoring" "draftsMonitoring" now-ms
                (listed (:stuck watched) (:aging watched)
                        (:conflicting watched) (:difficult watched))
                "Nothing worth a second look.")
-      (pr-list "Merge train" now-ms
+      (pr-list "Merge train" "draftsMergeTrain" now-ms
                (listed (:merging train) (:just-merged train))
-               "Nothing on its way in.")]
-
-     (when-not (:show-drafts in-force)
-       [:p {:class (str "px-1 " parts/faint)}
-        "Drafts are counted above and hidden from the lists. Show them in settings."])]))
+               "Nothing on its way in.")]]))
 
 ;; ------------------------------------------------------- one pull request
 

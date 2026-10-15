@@ -67,14 +67,14 @@ derived field or a config parameter.
 local storage): one global list of tracked repositories as `owner/name`, one
 general list of tracked members (logins) — members are not scoped per
 repository — the refresh cadence (**60 minutes by default**), the collection
-window, the show-drafts preference, and the classification thresholds. One
+window, and the classification thresholds. One
 configuration for the whole installation. Validation: non-empty repository
 list, non-empty member list, cadence within bounds.
 
 Configuration splits in two by *when it takes effect*, and the spec says so:
 **collection settings** (repositories, members, cadence, collection window)
 shape the next collection and nothing else; **presentation settings**
-(thresholds, show-drafts) apply to the snapshot already held, so changing a
+(thresholds) apply to the snapshot already held, so changing a
 threshold reclassifies what is on screen without fetching anything.
 
 **Collection** (in memory; lost on restart, rebuilt by the first refresh).
@@ -135,7 +135,7 @@ default.
 
 **Surfaces**: the four stat groups above, the per-member counts (authored /
 drafted / assigned), and the list views with their orderings. Drafts are
-counted but hidden unless the preference is on.
+counted but hidden until the list's own toggle shows them.
 
 ## 4. worklog — the substance to capture
 
