@@ -293,7 +293,7 @@
         scanning (discovery/active-scan sys (:starts-at day))
         days (worklog/window sys)]
     [:div {:id "worklog-day" :class "flex flex-col gap-4"}
-     [:section {:class (str parts/card (when scanning " scan-glow"))}
+     [:section {:class (str parts/card (when (:busy-with day) " busy-glow"))}
       [:div {:class "flex flex-wrap items-center justify-between gap-3 px-4 py-4"}
        [:div
         [:a {:href "/worklog" :class (str parts/muted " hover:underline")} "← timesheet"]
