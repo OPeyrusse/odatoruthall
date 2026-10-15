@@ -34,8 +34,9 @@
   }
 }
 
-/* A day being scanned: a rainbow runs round the edge of its summary and glows
-   past it, until the scan ends and the class goes with it.
+/* A day being scanned or submitted: a rainbow runs round the edge of its
+   summary and glows past it, until the scan or the submission ends and the
+   class goes with it.
 
    Three layers, bottom to top: the box's own background is the gradient, and
    shows as the ring through its transparent border; `::before` is the same
@@ -45,48 +46,48 @@
    border changing width and the page moving.
 
    Unlayered on purpose: it must win over the card's own border and background
-   utilities while the scan runs, and lose to nothing. */
-@property --scan-angle {
+   utilities while the day is busy, and lose to nothing. */
+@property --busy-angle {
   syntax: "<angle>";
   initial-value: 0deg;
   inherits: false;
 }
 
-@keyframes scan-spin {
+@keyframes busy-spin {
   to {
-    --scan-angle: 360deg;
+    --busy-angle: 360deg;
   }
 }
 
-.scan-glow {
-  --scan-rainbow: conic-gradient(
-    from var(--scan-angle),
+.busy-glow {
+  --busy-rainbow: conic-gradient(
+    from var(--busy-angle),
     #ff004c, #ff8a00, #ffe600, #2bd96b, #00c2ff, #6a5cff, #d43cff, #ff004c
   );
-  --scan-fill: var(--color-white);
+  --busy-fill: var(--color-white);
   position: relative;
   isolation: isolate;
   border-color: transparent;
-  background: var(--scan-rainbow) border-box;
-  animation: scan-spin 3s linear infinite;
+  background: var(--busy-rainbow) border-box;
+  animation: busy-spin 3s linear infinite;
 
   @variant dark {
-    --scan-fill: var(--color-slate-900);
+    --busy-fill: var(--color-slate-900);
   }
 }
 
-.scan-glow::before,
-.scan-glow::after {
+.busy-glow::before,
+.busy-glow::after {
   content: "";
   position: absolute;
   z-index: -1;
   pointer-events: none;
 }
 
-.scan-glow::before {
+.busy-glow::before {
   inset: -1px;
   border-radius: inherit;
-  background: var(--scan-rainbow);
+  background: var(--busy-rainbow);
   filter: blur(12px);
   opacity: 0.6;
 
@@ -95,15 +96,15 @@
   }
 }
 
-.scan-glow::after {
+.busy-glow::after {
   inset: 1px;
   border-radius: calc(var(--radius-xl) - 2px);
-  background: var(--scan-fill);
+  background: var(--busy-fill);
 }
 
 /* Motion stays the operator's call: without it, the ring holds still. */
 @media (prefers-reduced-motion: reduce) {
-  .scan-glow {
+  .busy-glow {
     animation: none;
   }
 }

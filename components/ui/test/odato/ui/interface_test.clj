@@ -213,7 +213,7 @@
         (is (str/includes? body greyed-in-card) "and greys the days being scanned")))
     (testing "the day being scanned says so, glows, and cannot be asked for again"
       (let [body (ui/day-fragment sys (worklog/day sys second-day))]
-        (is (str/includes? body "scan-glow"))
+        (is (str/includes? body "busy-glow"))
         (is (str/includes? body "scanning 0/7"))
         (is (= 2 (count (re-seq #"disabled=\"disabled\" title=\"This day is being scanned\"" body)))
             "neither scanned again nor submitted")
@@ -222,13 +222,29 @@
     (testing "and stops saying so once the scan ends"
       (discovery/run-scan! sys second-scan)
       (let [body (ui/day-fragment sys (worklog/day sys second-day))]
-        (is (not (str/includes? body "scan-glow")))
+        (is (not (str/includes? body "busy-glow")))
         (is (not (str/includes? body "This day is being scanned")))
         (is (not (str/includes? body greyed-on-day))))
       (is (str/includes? (ui/worklog-fragment sys) "Scanning")
           "while the other day's scan is still listed")
       (discovery/run-scan! sys first-scan)
       (is (not (str/includes? (ui/worklog-fragment sys) "Scanning"))))))
+
+(deftest a-day-being-submitted-glows-too
+  (let [sys (installation)
+        day (:starts-at (last (worklog/window sys)))]
+    (worklog/name-task! sys day "ABC-1")
+    (worklog/occupy-day! sys day :submission)
+    (testing "the day on its way to Jira says so and glows like a scan"
+      (let [body (ui/day-fragment sys (worklog/day sys day))]
+        (is (str/includes? body "busy-glow"))
+        (is (str/includes? body "submitting to Jira"))
+        (is (not (str/includes? body greyed-on-day))
+            "its tickets keep their colour: the submission adds nothing to them")))
+    (testing "and stops once Jira has answered"
+      (worklog/release-day! sys day :submission)
+      (is (not (str/includes? (ui/day-fragment sys (worklog/day sys day))
+                              "busy-glow"))))))
 
 (deftest every-page-carries-the-theme-switch
   (let [body (ui/worklog-page (installation))]
