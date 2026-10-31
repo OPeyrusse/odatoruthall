@@ -1,5 +1,6 @@
 {:paths ["src" "resources"]
  :deps {hiccup/hiccup {:mvn/version "2.0.0"}
+        org.clojure/data.json {:mvn/version "2.5.2"}
         poly/time {:local/root "../time"}
         poly/events {:local/root "../events"}
         poly/access {:local/root "../access"}
@@ -8,4 +9,6 @@
         poly/collector {:local/root "../collector"}
         poly/work-item {:local/root "../work-item"}
         poly/worklog {:local/root "../worklog"}
-        poly/discovery {:local/root "../discovery"}}}
+        poly/discovery {:local/root "../discovery"}
+        poly/owllie {:local/root "../owllie"}
+        poly/review {:local/root "../review"}}}

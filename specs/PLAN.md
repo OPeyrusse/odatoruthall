@@ -52,6 +52,8 @@ dependency order — producers before consumers.
 | `specs/worklog/worklog.allium` | `WorkDay` and `WorklogEntry` — the day, the tasks on it, the time as typed, the entry lifecycle, submission to the Jira worklog API and its failure modes | `access`, `work-item` |
 | `specs/worklog/discovery.allium` | The day scan: the GitHub and Jira sources, the queue, attribution of an activity to an issue key, quota waits, what a scan may and may not touch | `access`, `work-item`, `worklog` |
 | `specs/worklog/timesheet.allium` | Surfaces: the five-day window with its totals, one day in detail with its loose ends, the persistence guarantee | all three |
+| `specs/owldesk/review.allium` | Automated reviews run by Owllie: the review settings and the results repository check, launching a review, reading its results branch, the derived state of a review, judging findings, cleanup | `access`, `config` |
+| `specs/owldesk/owldesk.allium` | Surfaces: every review grouped by pull request, one review in full, the review settings panel | `access`, `config`, `review` |
 
 Rationale for the split: `pull-request` is pure classification and is the file
 tests will hammer hardest; `collection` is where every failure mode and
@@ -296,6 +298,31 @@ These settle worklog:
 - **Worklog parameters are spec constants, not settings.** The number of days,
   the working days and the bounds on one entry live in the worklog slice's
   `config` block; the operator's `Settings` surface stays gitdesk's.
+
+## 7bis. owldesk — decisions taken
+
+- **The branch is the run.** Owllie writes each run to its own orphan branch
+  `review/<owner>/<repo>/<number>/<run id>` of a results repository, following
+  the layout in Owllie's `shared/run-layout.md`. The installation reads it and
+  keeps only the launch (asked when, what the launcher answered) and the
+  operator's judgement of findings, both durable.
+- **The results repository is a setting**, checked (readable, carrying the
+  `.owllie-results` marker) before any review is launched towards it.
+- **Two launchers**, picked in the settings: a Claude scheduled task fired
+  through its API trigger (`OWLLIE_FIRE_URL`, `OWLLIE_FIRE_TOKEN`), or the
+  Claude CLI on the installation's machine (`OWLLIE_CLI_DIR`, a clone of
+  Owllie). Both start a cloud session; nothing runs locally.
+- **Cleanup is asked for**, previewed, and needs its own credential
+  (`OWLLIE_RESULTS_TOKEN`) that may delete branches of the results repository;
+  `GITHUB_TOKEN` stays read-only.
+- **The reader is generic.** The branch says what the run is made of
+  (`process.json`: phases in sequence, steps in parallel, each naming the file
+  it writes when it ends) and where it stands (`status.json`). Each step is a
+  list of generic blocks — markdown, code, stats, table, findings — or plain
+  markdown. owldesk knows nothing else of Owllie, so the review can change
+  without owldesk changing.
+- **Timeouts are spec constants** (start timeout, stall threshold, reading
+  intervals), to be tuned once real runs have been timed.
 
 ## 8. Questions still open
 

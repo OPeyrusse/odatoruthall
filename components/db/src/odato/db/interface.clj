@@ -5,10 +5,12 @@
   outlive the process; everything gitdesk collects dies with it and is rebuilt
   by the collection that starts with the process. So there are two connections:
 
-    :durable   configuration, work items, work days, worklog entries and the
-               activities a day scan found
+    :durable   configuration, work items, work days, worklog entries, the
+               activities a day scan found, the review settings, the reviews
+               asked for and the judgements of their findings
     :volatile  connections, the GitHub budget, the snapshot, its sources, its
-               pull requests, the cycles and the scans in flight
+               pull requests, the cycles and the scans in flight, and what the
+               results branches of the reviews hold
 
   Both are in memory. `:durable` has a file seam — give the store a `:file`
   and what it holds is written there after every transaction and read back at

@@ -1,0 +1,735 @@
+-- allium: 3
+--
+-- Reviews — automated code reviews of pull requests, run by Owllie in a Claude
+-- cloud session, followed and read from here.
+--
+-- The operator pastes the link to a pull request and asks for a review. The
+-- installation does not review anything itself: it asks a launcher to start a
+-- cloud session running Owllie, and hands it a request naming the pull
+-- request, the repository the results go to, and the branch they go on. From
+-- then on, everything the installation knows about the run it reads back from
+-- that branch: one branch per run, written by the session alone.
+--
+-- What the run is made of is not known here in advance: the branch says it.
+-- The run writes its process first -- phases that follow one another, each
+-- made of steps that run side by side, each step naming the file it will
+-- write when it ends -- then a status it keeps up to date, then each step's
+-- file as the step ends. A step's file is a list of generic blocks (text,
+-- code, figures, tables, findings) or plain markdown, shown as it comes. So
+-- Owllie can add an agent, a phase or a section without anything here
+-- changing; only the few block types and the two files above are shared.
+--
+-- So the results repository, not this installation, is where a run lives. The
+-- installation keeps only what the branch cannot say: that a review was asked
+-- for, when, and what the launcher answered -- which is what tells a run that
+-- has not started yet from one that never will. It also keeps what the
+-- operator thinks of the findings, so that the rules Owllie applies can be
+-- tuned from it, and that judgement outlives the branches it was made on.
+--
+-- Three promises hold:
+--
+--   * nothing here writes to the reviewed repository, and nothing here writes
+--     to the results repository except to delete the branches the operator
+--     asked to delete;
+--   * a run's state on screen is a reading of its branch, never a guess: a
+--     branch that says nothing for too long reads as stalled, not as running;
+--   * the results repository is a setting, not a constant: moving the
+--     results somewhere else is a matter of saving another repository, which
+--     is checked before anything is sent there.
+
+use "../shared/access.allium" as access
+use "../shared/config.allium" as settings
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum Launcher {
+    scheduled_task      -- a Claude scheduled task, fired through its API trigger
+    | claude_cli        -- the Claude CLI on the installation's machine, which
+                        -- starts a cloud session
+}
+
+enum ReviewSettingsFault {
+    invalid_results_repository
+    | invalid_brain_ref
+    | retention_out_of_bounds
+}
+
+enum ResultsAccessStatus {
+    unchecked           -- not checked since the process started or the
+                        -- settings changed
+    | ready             -- readable, and marked as a results repository
+    | unreadable        -- the GitHub credential cannot read it
+    | unmarked          -- readable, but without the marker file
+}
+
+enum LaunchRefusal {
+    invalid_pull_request_url
+    | invalid_brain_ref             -- the brain ref given is not a ref name
+    | github_unavailable            -- no valid GitHub credential
+    | no_results_repository         -- the settings name none
+    | results_repository_not_ready  -- unreadable or unmarked
+    | launcher_unavailable          -- the chosen launcher is not configured
+    | pull_request_not_found
+    | already_reviewing             -- a review of that pull request is
+                                    -- starting or running
+    | fire_limit_reached            -- too many reviews asked for in the last
+                                    -- hour
+}
+
+enum LaunchStatus {
+    firing          -- handed to the launcher, no answer yet
+    | fired         -- the launcher started a session
+    | refused       -- the launcher said no
+}
+
+enum RunState { running | done | failed }
+
+enum StepState {
+    done
+    | failed
+    | skipped
+    | running           -- no result yet, in the first phase still waiting on one
+    | pending           -- no result yet, in a later phase
+    | not_run           -- no result, and the run has ended
+    | unreadable        -- a result that cannot be read, once the run has ended
+}
+
+enum FindingVerdict { relevant | false_positive }
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value PullRequestReference {
+    repository: settings/RepositoryReference
+    number: Integer
+}
+
+value RunStep {
+    -- One step of a run's process, and what its file says.
+    phase: String
+    id: String
+    title: String
+    file: String
+    state: StepState
+}
+
+value RunFailure {
+    code: String        -- one of the codes Owllie documents
+    message: String
+}
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity LaunchAnswer {
+    -- What the launcher hands back for one launch: the session it started, or
+    -- why it did not.
+    launch: ReviewLaunch
+    session_url: String?
+    failure: String?
+}
+
+external entity ResultsBranch {
+    -- One branch of the results repository under the review prefix, as
+    -- GitHub reports it, with the files it holds. The installation only
+    -- reads it; the session that owns it writes it.
+    name: String
+    head: String                    -- the commit the branch points at
+    run_id: String
+    pull_request: PullRequestReference
+    state: RunState?                -- null when the status cannot be read
+    updated_at: Timestamp?          -- the heartbeat of the status
+    failure: RunFailure?
+    steps: List<RunStep>            -- the process, phase by phase, each step
+                                    -- with the state its file gives it
+    summary_step: String?           -- the step to show first
+}
+
+external entity OwllieSession {
+    -- The cloud session a launcher started. It runs Owllie and writes its
+    -- run's branch; nothing here talks to it again.
+    session_url: String
+}
+
+external entity ResultsRepositoryAnswer {
+    -- What GitHub says about the results repository when it is checked.
+    repository: settings/RepositoryReference
+    readable: Boolean
+    marked: Boolean
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity ReviewSettings {
+    scope: settings/Scope
+    results_repository: settings/RepositoryReference?
+    brain_ref: String?                  -- the Owllie ref whose rules are
+                                        -- used; none means its default branch
+    launcher: Launcher
+    keep_runs_per_pull_request: Integer
+    closed_pull_request_retention: Duration
+    failed_run_retention: Duration
+    updated_at: Timestamp?
+
+    invariant RetentionWithinBounds {
+        keep_runs_per_pull_request >= config.min_kept_runs
+            and keep_runs_per_pull_request <= config.max_kept_runs
+            and closed_pull_request_retention >= config.min_retention
+            and closed_pull_request_retention <= config.max_retention
+            and failed_run_retention >= config.min_retention
+            and failed_run_retention <= config.max_retention
+    }
+}
+
+entity ResultsAccess {
+    -- Whether the results repository in the settings can be used. It is
+    -- checked again whenever the settings are saved and whenever the
+    -- operator asks; it does not survive a restart.
+    scope: settings/Scope
+    status: ResultsAccessStatus
+    checked_at: Timestamp?
+
+    is_ready: status = ready
+}
+
+entity ReviewLaunch {
+    -- That a review was asked for, and what the launcher made of it. It is
+    -- what the installation keeps across a restart; the run itself lives on
+    -- its branch.
+    run_id: String
+    branch: String
+    pull_request: PullRequestReference
+    pull_request_title: String?
+    results_repository: settings/RepositoryReference
+    brain_ref: String?
+    status: LaunchStatus
+    fired_at: Timestamp
+    session_url: String?
+    refusal: String?
+
+    transitions status {
+        firing -> fired
+        firing -> refused
+        terminal: fired, refused
+    }
+}
+
+entity ReviewRun {
+    -- What a results branch says about its run. It is read again whenever
+    -- the branch moves, and it goes when the branch goes.
+    run_id: String
+    branch: String
+    head: String
+    pull_request: PullRequestReference
+    state: RunState?
+    updated_at: Timestamp?
+    failure: RunFailure?
+    steps: List<RunStep>
+    summary_step: String?
+}
+
+entity Review {
+    -- One review, as the operator sees it: what was asked for, and what its
+    -- branch says. Either half can be missing -- a launch whose branch has
+    -- not appeared, or a branch pushed by a run asked for elsewhere.
+    run_id: String
+    launch: ReviewLaunch?
+    run: ReviewRun?
+
+    pull_request: PullRequestReference
+
+    is_done: run != null and run.state = done
+    is_failed: run != null and run.state = failed
+    is_under_way: run != null and run.state = running
+    is_stalled: is_under_way and run.updated_at + config.stall_after <= now
+    is_running: is_under_way and not is_stalled
+    is_starting: run = null
+        and launch != null
+        and launch.status in {firing, fired}
+        and launch.fired_at + config.start_timeout > now
+    never_started: run = null
+        and launch != null
+        and (launch.status = refused or launch.fired_at + config.start_timeout <= now)
+
+    -- A review still in flight: one more review of the same pull request is
+    -- refused, and the results are read often.
+    is_active: is_starting or is_running
+}
+
+entity FindingFeedback {
+    -- What the operator thinks of one finding of one run. It keeps a copy of
+    -- the finding, so it is still readable once the run's branch is deleted.
+    run_id: String
+    fingerprint: String             -- stable across runs, given by Owllie
+    pull_request: PullRequestReference
+    verdict: FindingVerdict
+    rule: String
+    file: String
+    line: Integer
+    quote: String
+    observation: String
+    agents: Set<String>
+    judged_at: Timestamp
+}
+
+entity ResultsPolling {
+    -- When the results branches are read next.
+    scope: settings/Scope
+    next_read_at: Timestamp
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    -- A launch whose branch has not appeared after this never started.
+    start_timeout: Duration = 5.minutes
+    -- A run whose status has not moved for this long is stalled.
+    stall_after: Duration = 20.minutes
+    -- How often the branches are read while a review is in flight, and
+    -- otherwise.
+    active_read_interval: Duration = 1.minutes
+    idle_read_interval: Duration = 10.minutes
+    -- What a scheduled task accepts in an hour.
+    fires_per_hour: Integer = 30
+
+    default_kept_runs: Integer = 3
+    min_kept_runs: Integer = 1
+    max_kept_runs: Integer = 50
+    default_closed_pull_request_retention: Duration = 14.days
+    default_failed_run_retention: Duration = 3.days
+    min_retention: Duration = 1.days
+    max_retention: Duration = 365.days
+}
+
+------------------------------------------------------------
+-- Defaults
+------------------------------------------------------------
+
+default ReviewSettings review_settings = {
+    scope: installation,
+    results_repository: null,
+    brain_ref: null,
+    launcher: scheduled_task,
+    keep_runs_per_pull_request: config.default_kept_runs,
+    closed_pull_request_retention: config.default_closed_pull_request_retention,
+    failed_run_retention: config.default_failed_run_retention
+}
+
+default ResultsAccess results_access = { scope: installation, status: unchecked }
+
+default ResultsPolling results_polling = { scope: installation, next_read_at: now }
+
+------------------------------------------------------------
+-- Rules -- settings
+------------------------------------------------------------
+
+rule ReviewSettingsSaved {
+    when: OperatorSavesReviewSettings(repository, brain_ref, launcher, kept, closed_retention, failed_retention)
+    requires: repository = null or is_repository_name(repository)
+    requires: brain_ref = null or is_ref_name(brain_ref)
+    requires: kept >= config.min_kept_runs and kept <= config.max_kept_runs
+    requires: closed_retention >= config.min_retention and closed_retention <= config.max_retention
+    requires: failed_retention >= config.min_retention and failed_retention <= config.max_retention
+    ensures:
+        review_settings.results_repository = repository
+        review_settings.brain_ref = brain_ref
+        review_settings.launcher = launcher
+        review_settings.keep_runs_per_pull_request = kept
+        review_settings.closed_pull_request_retention = closed_retention
+        review_settings.failed_run_retention = failed_retention
+        review_settings.updated_at = now
+        results_access.status = unchecked
+        ResultsRepositoryCheckRequested()
+}
+
+rule ReviewSettingsRefused {
+    when: OperatorSavesReviewSettings(repository, brain_ref, launcher, kept, closed_retention, failed_retention)
+    requires:
+        (repository != null and not is_repository_name(repository))
+        or (brain_ref != null and not is_ref_name(brain_ref))
+        or kept < config.min_kept_runs or kept > config.max_kept_runs
+        or closed_retention < config.min_retention or closed_retention > config.max_retention
+        or failed_retention < config.min_retention or failed_retention > config.max_retention
+    ensures:
+        if repository != null and not is_repository_name(repository):
+            ReviewSettingsRejected(fault: invalid_results_repository)
+        else if brain_ref != null and not is_ref_name(brain_ref):
+            ReviewSettingsRejected(fault: invalid_brain_ref)
+        else:
+            ReviewSettingsRejected(fault: retention_out_of_bounds)
+
+    @guidance
+        -- A refused save changes nothing. These settings are saved apart
+        -- from the gitdesk configuration: a review setting never waits on a
+        -- tracked repository, nor the other way round.
+}
+
+rule OperatorChecksResultsRepository {
+    when: OperatorRequestsResultsCheck()
+    ensures: ResultsRepositoryCheckRequested()
+}
+
+rule ResultsRepositoryChecked {
+    when: ResultsRepositoryCheckAnswered(answer)
+    requires: answer.repository = review_settings.results_repository
+    ensures:
+        results_access.checked_at = now
+        if not answer.readable:
+            results_access.status = unreadable
+        else if not answer.marked:
+            results_access.status = unmarked
+        else:
+            results_access.status = ready
+
+    @guidance
+        -- Marked means the repository's default branch holds the file Owllie
+        -- requires before it pushes anything there. The check reads with the
+        -- operator's GitHub credential; whether the cloud session may push is
+        -- something only the session can find out, and a run that cannot
+        -- push never starts.
+}
+
+------------------------------------------------------------
+-- Rules -- launching
+------------------------------------------------------------
+
+rule OperatorLaunchesReview {
+    when: OperatorRequestsReview(url, brain_ref)
+    ensures: LaunchRequested(url: url, brain_ref: brain_ref)
+}
+
+rule LaunchStarts {
+    when: LaunchRequested(url, brain_ref)
+    let github_access = access/Connection{service: github}
+    let pull_request = pull_request_of(url)
+    let in_flight = Reviews where is_active and pull_request = pull_request
+    let recent = ReviewLaunches where fired_at + 1.hours > now
+    requires: pull_request != null
+    requires: brain_ref = null or is_ref_name(brain_ref)
+    requires: github_access.is_usable
+    requires: review_settings.results_repository != null
+    requires: results_access.is_ready
+    requires: launcher_available(review_settings.launcher)
+    requires: pull_request_exists(pull_request)
+    requires: in_flight.count = 0
+    requires: recent.count < config.fires_per_hour
+    let run_id = new_run_id(now)
+    ensures:
+        ReviewLaunch.created(
+            run_id: run_id,
+            branch: run_branch(pull_request, run_id),
+            pull_request: pull_request,
+            pull_request_title: pull_request_title(pull_request),
+            results_repository: review_settings.results_repository,
+            brain_ref: brain_ref ?? review_settings.brain_ref,
+            status: firing,
+            fired_at: now)
+
+    @guidance
+        -- The run id is the UTC minute the review was asked for, then a few
+        -- random hex characters, so run ids sort in the order the reviews
+        -- were asked for. The branch is review/<owner>/<repo>/<number>/<run
+        -- id>, with the owner and the repository written the way Owllie
+        -- documents. The request handed to the launcher names the pull
+        -- request, the results repository, the branch and, when there is
+        -- one, the brain ref -- nothing else.
+}
+
+rule LaunchRefused {
+    when: LaunchRequested(url, brain_ref)
+    let github_access = access/Connection{service: github}
+    let pull_request = pull_request_of(url)
+    let in_flight = Reviews where is_active and pull_request = pull_request
+    let recent = ReviewLaunches where fired_at + 1.hours > now
+    requires:
+        pull_request = null
+        or (brain_ref != null and not is_ref_name(brain_ref))
+        or not github_access.is_usable
+        or review_settings.results_repository = null
+        or not results_access.is_ready
+        or not launcher_available(review_settings.launcher)
+        or not pull_request_exists(pull_request)
+        or in_flight.count > 0
+        or recent.count >= config.fires_per_hour
+    ensures:
+        if pull_request = null:
+            ReviewRefused(reason: invalid_pull_request_url)
+        else if brain_ref != null and not is_ref_name(brain_ref):
+            ReviewRefused(reason: invalid_brain_ref)
+        else if not github_access.is_usable:
+            ReviewRefused(reason: github_unavailable)
+        else if review_settings.results_repository = null:
+            ReviewRefused(reason: no_results_repository)
+        else if not results_access.is_ready:
+            ReviewRefused(reason: results_repository_not_ready)
+        else if not launcher_available(review_settings.launcher):
+            ReviewRefused(reason: launcher_unavailable)
+        else if in_flight.count > 0:
+            ReviewRefused(reason: already_reviewing)
+        else if recent.count >= config.fires_per_hour:
+            ReviewRefused(reason: fire_limit_reached)
+        else:
+            ReviewRefused(reason: pull_request_not_found)
+
+    @guidance
+        -- A refused review sends nothing and records nothing.
+}
+
+rule LaunchHandedToTheLauncher {
+    when: launch: ReviewLaunch.created
+    ensures: ReviewFireRequested(launch: launch, launcher: review_settings.launcher)
+}
+
+rule LaunchFired {
+    when: LaunchAnswered(launch, session_url)
+    requires: launch.status = firing
+    ensures:
+        launch.status = fired
+        launch.session_url = session_url
+}
+
+rule LaunchFailed {
+    when: LaunchFailedToStart(launch, failure)
+    requires: launch.status = firing
+    ensures:
+        launch.status = refused
+        launch.refusal = failure
+
+    @guidance
+        -- The launch is kept, so the operator sees that the review never
+        -- started and why. It counts towards the hour's launches all the
+        -- same: the launcher may have counted it.
+}
+
+------------------------------------------------------------
+-- Rules -- reading the results
+------------------------------------------------------------
+
+rule ResultsReadDue {
+    when: due: ResultsPolling.next_read_at <= now
+    let active = Reviews where is_active
+    ensures:
+        if active.count > 0:
+            due.next_read_at = now + config.active_read_interval
+        else:
+            due.next_read_at = now + config.idle_read_interval
+        ResultsReadRequested()
+
+    @guidance
+        -- One request lists every results branch with the commit it points
+        -- at; only a branch whose commit moved is read again, so a quiet
+        -- results repository costs one request per reading. Nothing is read
+        -- while the GitHub budget is spent or while no results repository is
+        -- set. Opening a review page also asks for a reading.
+}
+
+rule ResultsBranchRead {
+    when: ResultsBranchObserved(branch)
+    let known = ReviewRun{run_id: branch.run_id}
+    ensures:
+        if exists known:
+            known.head = branch.head
+            known.state = branch.state
+            known.updated_at = branch.updated_at
+            known.failure = branch.failure
+            known.steps = branch.steps
+            known.summary_step = branch.summary_step
+        else:
+            ReviewRun.created(
+                run_id: branch.run_id,
+                branch: branch.name,
+                head: branch.head,
+                pull_request: branch.pull_request,
+                state: branch.state,
+                updated_at: branch.updated_at,
+                failure: branch.failure,
+                steps: branch.steps,
+                summary_step: branch.summary_step)
+}
+
+rule StepStatesAreReadFromTheirFiles {
+    when: ResultsBranchObserved(branch)
+    ensures: StepStatesDerived(branch: branch)
+
+    @guidance
+        -- A step's state is read from its file, and from where the run
+        -- stands. A file that says done, failed or skipped is that; a
+        -- markdown file is done. While the run is running, a step without a
+        -- readable file is running when its phase is the first that still
+        -- has such a step, and pending when it comes later: a commit is
+        -- never seen half written, but a reader does not judge a run in
+        -- flight on one file. Once the run has ended, a step without a file
+        -- was not run, and one whose file cannot be read is unreadable.
+        -- Fields a block carries that are not known here are ignored, and a
+        -- block of a type not known here is shown as such, with what it
+        -- holds; a process of another major schema version is shown with a
+        -- warning.
+}
+
+rule ResultsBranchGone {
+    when: ResultsBranchesListed(names)
+    ensures:
+        for run in ReviewRuns where not (branch in names):
+            not exists run
+
+    @guidance
+        -- A branch deleted elsewhere takes its run off the screen at the next
+        -- reading. Its launch, if there is one, then reads as never started
+        -- until the operator removes it.
+}
+
+------------------------------------------------------------
+-- Rules -- judging findings
+------------------------------------------------------------
+
+rule OperatorJudgesFinding {
+    when: OperatorJudgesFinding(review, fingerprint, verdict)
+    let finding = finding_of(review, fingerprint)
+    let earlier = FindingFeedback{run_id: review.run_id, fingerprint: fingerprint}
+    requires: finding != null
+    ensures:
+        if exists earlier:
+            earlier.verdict = verdict
+            earlier.judged_at = now
+        else:
+            FindingFeedback.created(
+                run_id: review.run_id,
+                fingerprint: fingerprint,
+                pull_request: review.pull_request,
+                verdict: verdict,
+                rule: finding.rule,
+                file: finding.file,
+                line: finding.line,
+                quote: finding.quote,
+                observation: finding.observation,
+                agents: finding.agents,
+                judged_at: now)
+}
+
+rule OperatorWithdrawsJudgement {
+    when: OperatorWithdrawsJudgement(review, fingerprint)
+    let earlier = FindingFeedback{run_id: review.run_id, fingerprint: fingerprint}
+    requires: exists earlier
+    ensures: not exists earlier
+}
+
+------------------------------------------------------------
+-- Rules -- cleaning up
+------------------------------------------------------------
+
+rule OperatorRemovesReview {
+    when: OperatorRemovesReview(review)
+    requires: not review.is_active
+    ensures: ReviewRemovalRequested(review: review)
+}
+
+rule OperatorCleansUp {
+    when: OperatorConfirmsCleanup()
+    ensures:
+        for review in Reviews where cleanup_candidate(review, review_settings):
+            ReviewRemovalRequested(review: review)
+
+    @guidance
+        -- A review is a candidate when it is not in flight and one of these
+        -- holds: more recent reviews of its pull request already fill the
+        -- number of runs kept per pull request; its pull request was closed
+        -- or merged longer ago than the closed retention; or it failed,
+        -- stalled or never started longer ago than the failed retention. The
+        -- operator sees the candidates before confirming.
+}
+
+rule ReviewRemoved {
+    when: ReviewRemovalRequested(review)
+    ensures:
+        if review.run != null:
+            ResultsBranchDeletionRequested(branch: review.run.branch)
+            not exists review.run
+        if review.launch != null:
+            not exists review.launch
+
+    @guidance
+        -- Deleting a branch needs a credential that may write to the results
+        -- repository; without one, the removal is refused and nothing
+        -- changes. What the operator judged of the run's findings stays.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant OneLaunchPerRun {
+    for a in ReviewLaunches:
+        for b in ReviewLaunches:
+            a != b implies a.run_id != b.run_id
+}
+
+invariant OneJudgementPerFinding {
+    for a in FindingFeedbacks:
+        for b in FindingFeedbacks:
+            a != b implies (a.run_id != b.run_id or a.fingerprint != b.fingerprint)
+}
+
+------------------------------------------------------------
+-- Actors
+------------------------------------------------------------
+
+actor OwllieLauncher {
+    identified_by: OwllieSession
+}
+
+------------------------------------------------------------
+-- Surfaces -- the integrations
+------------------------------------------------------------
+
+surface ReviewLauncherIntegration {
+    facing launcher: OwllieLauncher
+
+    exposes:
+        launcher.session_url
+        for launch in ReviewLaunches where status = firing:
+            launch.pull_request
+            launch.results_repository
+            launch.branch
+            launch.brain_ref
+
+    provides:
+        for answer in LaunchAnswers:
+            LaunchAnswered(answer.launch, answer.session_url)
+                when answer.failure = null
+            LaunchFailedToStart(answer.launch, answer.failure)
+                when answer.failure != null
+
+    @guarantee TheRequestIsAllTheSessionGets
+        -- The session is told the pull request, the results repository, the
+        -- branch and the brain ref, in the request format Owllie documents,
+        -- and nothing else. It treats the request as data, and refuses one
+        -- whose branch does not belong to its pull request.
+}
+
+surface ResultsRepositoryIntegration {
+    facing gateway: access/GithubGateway
+
+    exposes:
+        gateway.budget_remaining
+        review_settings.results_repository
+
+    provides:
+        for answer in ResultsRepositoryAnswers:
+            ResultsRepositoryCheckAnswered(answer)
+        ResultsBranchesListed(ResultsBranches -> name)
+        for branch in ResultsBranches:
+            ResultsBranchObserved(branch)
+
+    @guarantee ReadOnlyButForDeletion
+        -- The installation reads the results repository with the operator's
+        -- GitHub credential, and writes to it only to delete branches, with a
+        -- credential of its own.
+}

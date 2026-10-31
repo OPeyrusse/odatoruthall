@@ -59,3 +59,10 @@
   [{:keys [type]}]
   (contains? #{"worklog" "scan" "work-item" "connection" "access"}
              (namespace type)))
+
+(defn owldesk-event?
+  "What changes an owldesk surface: a launch and what the launcher answered,
+  a reading of the results branches, a judgement, a removal, the settings,
+  and the GitHub credential and budget the readings depend on."
+  [{:keys [type]}]
+  (contains? #{"review" "connection" "access" "budget"} (namespace type)))

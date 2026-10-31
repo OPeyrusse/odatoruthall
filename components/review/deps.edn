@@ -1,0 +1,10 @@
+{:paths ["src"]
+ :deps {org.clojure/data.json {:mvn/version "2.5.2"}
+        org.clojure/tools.logging {:mvn/version "1.3.1"}
+        poly/db {:local/root "../db"}
+        poly/time {:local/root "../time"}
+        poly/events {:local/root "../events"}
+        poly/access {:local/root "../access"}
+        poly/config {:local/root "../config"}
+        poly/github {:local/root "../github"}
+        poly/owllie {:local/root "../owllie"}}}

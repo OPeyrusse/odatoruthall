@@ -1,5 +1,5 @@
 (ns odato.server.handler
-  "The routes both applications hang off.
+  "The routes the three applications hang off.
 
   Every command is a plain HTTP POST that a form can make on its own. Datastar
   makes the same POST without a page load and the server answers 204, because
@@ -13,6 +13,7 @@
             [odato.config.interface :as config]
             [odato.discovery.interface :as discovery]
             [odato.pull-request.interface :as prs]
+            [odato.review.interface :as review]
             [odato.server.params :as params]
             [odato.server.sse :as sse]
             [odato.server.static :as static]
@@ -51,6 +52,22 @@
     (first (filter #(= ident (:ident %)) (collector/pull-requests sys)))))
 
 ;; ------------------------------------------------------------------ worklog
+
+(defn- html-or-fragment
+  "A command whose answer Datastar morphs in place — one merge event, which is
+  what it reads in the answer to a post — or that a plain form post reads as a
+  whole page."
+  [request fragment page]
+  (if (datastar-request? request)
+    {:status 200
+     :headers {"content-type" "text/event-stream" "cache-control" "no-cache"}
+     :body (sse/merge-fragments (fragment))}
+    {:status 200
+     :headers {"content-type" "text/html; charset=utf-8"}
+     :body (page)}))
+
+(defn- verdict [s]
+  (case (str s) "relevant" :relevant "false-positive" :false-positive nil))
 
 (defn- day-or-nil [sys day-string]
   (when-let [starts-at (t/parse-day day-string)]
@@ -91,8 +108,44 @@
       (sse/stream sys request {:relevant? sse/worklog-event?
                                :fragment-fn ui/worklog-fragment})
 
+      ;; --------------------------------------------------------- owldesk
+      [:get ["owldesk"]]
+      (do (review/read-soon! sys) (html (ui/owldesk-page sys)))
+
+      [:get ["sse" "owldesk"]]
+      (sse/stream sys request {:relevant? sse/owldesk-event?
+                               :fragment-fn ui/owldesk-fragment})
+
+      [:post ["owldesk" "launch"]]
+      (let [outcome (review/launch! sys {:url (param "url") :brain-ref (param "brain-ref")})]
+        (html-or-fragment request
+                          #(ui/launch-outcome-fragment outcome)
+                          #(ui/owldesk-page sys outcome)))
+
+      [:post ["owldesk" "refresh"]]
+      (do (future (review/read-results! sys)) (done request "/owldesk"))
+
+      [:get ["owldesk" "cleanup"]]
+      (do (review/refresh-pull-request-states! sys) (html (ui/cleanup-page sys)))
+
+      [:post ["owldesk" "cleanup"]]
+      (html (ui/cleanup-page sys (review/clean-up! sys)))
+
       ;; --------------------------------------------------------- settings
       [:get ["settings"]] (html (ui/settings-page sys))
+
+      [:post ["settings" "owldesk"]]
+      (let [outcome (review/save-settings! sys (ui/review-settings-proposal @params))]
+        (when (:ok outcome) (review/check-results-repository! sys))
+        (html-or-fragment request
+                          #(ui/review-settings-fragment sys outcome)
+                          #(ui/settings-page sys nil outcome)))
+
+      [:post ["settings" "owldesk" "check"]]
+      (do (review/check-results-repository! sys)
+          (html-or-fragment request
+                            #(ui/review-settings-fragment sys nil)
+                            #(ui/settings-page sys)))
 
       [:post ["settings"]]
       (let [outcome (config/save! sys (ui/settings-proposal @params))]
@@ -144,6 +197,48 @@
           (if-let [pull-request (pull-request-by sys owner name number)]
             (html (ui/pull-request-page sys pull-request))
             (not-found sys "No such pull request in the snapshot.")))
+
+        ;; /owldesk/review/:run-id and /owldesk/review/:run-id/:step
+        (and (= :get request-method) (<= 3 (count segments) 4)
+             (= ["owldesk" "review"] (subvec segments 0 2)))
+        (let [step (get segments 3)]
+          (review/read-soon! sys)
+          (if-let [r (review/review sys (nth segments 2))]
+            (if (or (nil? step) (ui/review-step? r step))
+              (html (ui/review-page sys r step))
+              (not-found sys "No such step in this review."))
+            (not-found sys "No such review. Its branch may not be read yet, or it was removed.")))
+
+        ;; /sse/owldesk/review/:run-id[/:step]
+        (and (= :get request-method) (<= 4 (count segments) 5)
+             (= ["sse" "owldesk" "review"] (subvec segments 0 3)))
+        (let [run-id (nth segments 3)
+              agent (get segments 4)]
+          (sse/stream sys request
+                      {:relevant? sse/owldesk-event?
+                       :fragment-fn (fn [sys]
+                                      (if-let [r (review/review sys run-id)]
+                                        (ui/review-fragment sys r agent)
+                                        "<div id=\"owldesk-review\">This review is gone.</div>"))}))
+
+        ;; /owldesk/review/:run-id/judge
+        (and (= :post request-method) (= 4 (count segments))
+             (= ["owldesk" "review"] (subvec segments 0 2)) (= "judge" (nth segments 3)))
+        (let [run-id (nth segments 2)
+              fingerprint (str (param "fingerprint"))]
+          (if-let [v (verdict (param "verdict"))]
+            (review/judge! sys run-id fingerprint v)
+            (review/withdraw-judgement! sys run-id fingerprint))
+          (done request (str "/owldesk/review/" run-id)))
+
+        ;; /owldesk/review/:run-id/remove
+        (and (= :post request-method) (= 4 (count segments))
+             (= ["owldesk" "review"] (subvec segments 0 2)) (= "remove" (nth segments 3)))
+        (let [outcome (review/remove! sys (nth segments 2))]
+          (if (:ok outcome)
+            {:status 303 :headers {"location" "/owldesk"} :body ""}
+            (not-found sys (str "The review could not be removed: "
+                                (str/replace (name (:fault outcome)) "-" " ") "."))))
 
         ;; /sse/worklog/:day
         (and (= :get request-method)

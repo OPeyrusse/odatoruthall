@@ -26,6 +26,8 @@
     poly/work-item    {:local/root "components/work-item"}
     poly/worklog      {:local/root "components/worklog"}
     poly/discovery    {:local/root "components/discovery"}
+    poly/owllie       {:local/root "components/owllie"}
+    poly/review       {:local/root "components/review"}
     poly/ui           {:local/root "components/ui"}
     poly/demo         {:local/root "components/demo"}
     poly/server       {:local/root "bases/server"}}}
@@ -46,6 +48,8 @@
                  "components/work-item/test"
                  "components/worklog/test"
                  "components/discovery/test"
+                 "components/owllie/test"
+                 "components/review/test"
                  "components/ui/test"
                  "components/demo/test"
                  "bases/server/test"]

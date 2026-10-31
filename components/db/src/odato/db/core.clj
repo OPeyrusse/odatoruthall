@@ -36,7 +36,14 @@
    :activity/day              {:db/valueType :db.type/ref}
    :activity/named-keys       {:db/cardinality :db.cardinality/many}
    :activity/pending-keys     {:db/cardinality :db.cardinality/many}
-   :activity/attributed-keys  {:db/cardinality :db.cardinality/many}})
+   :activity/attributed-keys  {:db/cardinality :db.cardinality/many}
+
+   ;; Reviews — the settings, what was asked for, and what the operator
+   ;; thought of the findings. The runs themselves live on their branches.
+   :review-settings/scope     {:db/unique :db.unique/identity}
+   :review-launch/run-id      {:db/unique :db.unique/identity}
+   :feedback/id               {:db/unique :db.unique/identity}
+   :feedback/agents           {:db/cardinality :db.cardinality/many}})
 
 (def volatile-schema
   "What dies with the process."
@@ -65,7 +72,15 @@
    ;; The day scans.
    :scan/id                   {:db/unique :db.unique/identity}
    :scan-task/id              {:db/unique :db.unique/identity}
-   :scan-task/scan            {:db/valueType :db.type/ref}})
+   :scan-task/scan            {:db/valueType :db.type/ref}
+
+   ;; What the results repository said: whether it is usable, what each
+   ;; branch holds, when to read it next, and the state of the pull requests
+   ;; reviewed.
+   :results-access/scope      {:db/unique :db.unique/identity}
+   :results-polling/scope     {:db/unique :db.unique/identity}
+   :review-run/id             {:db/unique :db.unique/identity}
+   :review-pr/ident           {:db/unique :db.unique/identity}})
 
 ;; ------------------------------------------------------------- persistence
 
