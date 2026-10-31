@@ -21,8 +21,7 @@
             [odato.review.settings :as settings]))
 
 (def timing core/timing)
-(def agents core/agents)
-(def severities core/severities)
+(def schema core/schema)
 (def launchers settings/launchers)
 
 (defn ensure-defaults! [sys] (results/ensure-defaults! sys))
@@ -79,7 +78,12 @@
   "Every review, most recently asked for first. Each is `{:run-id
   :pull-request :title :state :asked-at :launch {...}|nil :run {...}|nil}`;
   `:state` is `:starting`, `:running`, `:stalled`, `:done`, `:failed`,
-  `:never-started` or `:unreadable`."
+  `:never-started` or `:unreadable`. `:run` holds what the branch says:
+  `:process`, `:status`, `:state`, `:updated-at`, `:error`, `:headline`,
+  `:summary-step`, and `:steps`, each `{:phase :phase-title :id :title :file
+  :state :result}`, `:state` among `:done :failed :skipped :running :pending
+  :not-run :unreadable` and `:result` the step's file (`{:markdown ...}` for
+  markdown)."
   [sys]
   (core/reviews sys))
 
@@ -117,8 +121,8 @@
 ;; ----------------------------------------------------------------- findings
 
 (defn findings
-  "A review's findings by fingerprint: the summary's, then the agents' kept
-  and merged ones."
+  "A review's findings by fingerprint, as its steps show them, the summary
+  step's first."
   [review]
   (core/findings review))
 

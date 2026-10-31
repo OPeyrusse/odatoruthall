@@ -32,10 +32,9 @@ surface Reviews {
             each.launch.status
             each.launch.refusal
             each.launch.session_url
-            each.run.progress
+            each.run.state
             each.run.updated_at
             each.run.failure
-            each.run.has_summary
             each.is_starting
             each.is_running
             each.is_stalled
@@ -53,7 +52,7 @@ surface Reviews {
     @guarantee GroupedByPullRequest
         -- Reviews are listed by repository, then by pull request, the most
         -- recent review first; each pull request says how many reviews it
-        -- had and what the latest found.
+        -- had and what the latest found, in the headline the run wrote.
 
     @guarantee WhatPreventsALaunchIsSaid
         -- When a review cannot be asked for -- no results repository, one not
@@ -66,8 +65,8 @@ surface Reviews {
 }
 
 surface ReviewPage {
-    -- One review in full: where it stands, then its summary and one view per
-    -- review agent.
+    -- One review in full: where it stands, then one view per step of its
+    -- process, the summary step first.
     facing operator: access/Operator
 
     context subject: review/Review
@@ -82,10 +81,15 @@ surface ReviewPage {
         subject.launch.session_url
         subject.launch.brain_ref
         subject.run.branch
-        subject.run.progress
+        subject.run.state
         subject.run.updated_at
         subject.run.failure
-        subject.run.has_summary
+        subject.run.summary_step
+        for step in subject.run.steps:
+            step.phase
+            step.id
+            step.title
+            step.state
         subject.is_starting
         subject.is_running
         subject.is_stalled
@@ -107,21 +111,22 @@ surface ReviewPage {
         ReviewPage(others)
 
     @guarantee ProgressWhileRunning
-        -- While the review runs, the page shows each agent's state, the last
-        -- heartbeat and how long the run has taken; the files of the agents
-        -- already done can be read before the summary exists, marked as not
-        -- yet checked against each other.
+        -- While the review runs, the page shows its process as the branch
+        -- describes it -- each phase, each step and its state -- with the
+        -- last heartbeat. The result of a step already done can be read
+        -- before the run ends.
 
-    @guarantee SummaryThenAgents
-        -- Once the summary exists, the page opens on it: the verdict, the
-        -- counts per severity, the intent check, the deduplicated findings,
-        -- the impact, the uncovered edge cases and the limitations. Each
-        -- agent has its own view: its model, how long it took, and every
-        -- finding it made -- kept, merged into another, dropped by the
-        -- synthesis or rejected by the checks, with the reason.
+    @guarantee OneViewPerStep
+        -- Each step has its own view: what it says about itself, then its
+        -- blocks in order -- text, code, figures, tables, findings -- or its
+        -- markdown. The summary step, when the process names one, is the
+        -- view the page opens on once it is there. Each finding says its
+        -- severity, where it is, the code it quotes, what it observes, and
+        -- whether the checks kept it, merged it, dropped it or rejected it,
+        -- with the reason.
 
     @guarantee EachFindingCanBeJudged
-        -- Every finding of the summary can be marked relevant or a false
+        -- Every finding a step shows can be marked relevant or a false
         -- positive, and the mark can be withdrawn. The mark is kept here,
         -- not on the branch, and survives the branch's deletion.
 

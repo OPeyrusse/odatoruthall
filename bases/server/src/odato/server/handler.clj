@@ -198,18 +198,18 @@
             (html (ui/pull-request-page sys pull-request))
             (not-found sys "No such pull request in the snapshot.")))
 
-        ;; /owldesk/review/:run-id and /owldesk/review/:run-id/:agent
+        ;; /owldesk/review/:run-id and /owldesk/review/:run-id/:step
         (and (= :get request-method) (<= 3 (count segments) 4)
              (= ["owldesk" "review"] (subvec segments 0 2)))
-        (let [agent (get segments 3)]
+        (let [step (get segments 3)]
           (review/read-soon! sys)
           (if-let [r (review/review sys (nth segments 2))]
-            (if (or (nil? agent) (some #{agent} review/agents))
-              (html (ui/review-page sys r agent))
-              (not-found sys "No such review agent."))
+            (if (or (nil? step) (ui/review-step? r step))
+              (html (ui/review-page sys r step))
+              (not-found sys "No such step in this review."))
             (not-found sys "No such review. Its branch may not be read yet, or it was removed.")))
 
-        ;; /sse/owldesk/review/:run-id[/:agent]
+        ;; /sse/owldesk/review/:run-id[/:step]
         (and (= :get request-method) (<= 4 (count segments) 5)
              (= ["sse" "owldesk" "review"] (subvec segments 0 3)))
         (let [run-id (nth segments 3)

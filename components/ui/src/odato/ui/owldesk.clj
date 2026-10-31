@@ -5,12 +5,14 @@
 
   Everything about a run is read from its results branch; the pages only say
   what the last reading found, and when."
-  (:require [clojure.string :as str]
+  (:require [clojure.data.json :as json]
+            [clojure.string :as str]
             [odato.access.interface :as access]
             [odato.config.interface :as config]
             [odato.owllie.interface :as owllie]
             [odato.review.interface :as review]
             [odato.time.interface :as t]
+            [odato.ui.markdown :as markdown]
             [odato.ui.parts :as parts]))
 
 (def ^:private separated "border-t border-slate-200 dark:border-slate-800")
@@ -27,7 +29,7 @@
 
 (defn review-href
   ([run-id] (str "/owldesk/review/" run-id))
-  ([run-id agent] (str "/owldesk/review/" run-id "/" agent)))
+  ([run-id step] (str "/owldesk/review/" run-id "/" step)))
 
 (defn- results-branch-url [sys branch]
   (when-let [{:keys [owner name]} (:results-repository (review/settings sys))]
@@ -40,28 +42,32 @@
 
 (defn- state-chip [r]
   (let [[tone label] (state-tones (:state r) [:neutral (name (:state r))])
-        phase (get-in r [:run :progress :status])]
-    (parts/chip (if (and (= :running (:state r)) phase) (str label " · " phase) label) tone)))
+        running (when (= :running (:state r))
+                  (->> (get-in r [:run :steps]) (filter #(= :running (:state %))) first :phase-title))]
+    (parts/chip (if running (str label " · " running) label) tone)))
+
+(def ^:private tones
+  "The tones a run may give a value, as Owllie's layout names them."
+  {"neutral" :neutral "green" :green "amber" :amber "red" :red "sky" :sky "violet" :violet})
+
+(defn- tone [s] (get tones (str s) :neutral))
 
 (def ^:private severity-tones
   {"blocker" :red "major" :amber "minor" :neutral "info" :sky})
 
 (defn- severity-chip [severity]
-  (parts/chip (str/upper-case (str severity)) (severity-tones severity :neutral)))
+  (parts/chip (str/upper-case (str severity)) (severity-tones (str severity) :neutral)))
 
-(defn- counts-of [r]
-  (let [counts (get-in r [:run :summary :counts])]
-    (into {} (for [s review/severities] [s (long (or (get counts (keyword s)) 0))]))))
-
-(defn- counts-line [r]
-  (let [c (counts-of r)]
-    (when (get-in r [:run :summary])
-      [:span {:class "tabular-nums"}
-       (interpose " · "
-                  (for [s review/severities :when (or (pos? (c s)) (#{"blocker" "major"} s))]
-                    [:span {:class (when (and (= s "blocker") (pos? (c s)))
-                                     "font-semibold text-rose-700 dark:text-rose-300")}
-                     (str (c s) " " s)]))])))
+(defn- headline [r]
+  (when-let [items (seq (get-in r [:run :headline]))]
+    [:span {:class "tabular-nums"}
+     (interpose " · "
+                (for [{:keys [label value] :as item} items]
+                  [:span {:class (case (tone (:tone item))
+                                   :red "font-semibold text-rose-700 dark:text-rose-300"
+                                   :amber "text-amber-700 dark:text-amber-300"
+                                   nil)}
+                   (str value " " label)]))]))
 
 (def ^:private ok-notice
   (str "border-emerald-300 bg-emerald-50 text-emerald-800 "
@@ -156,8 +162,8 @@
      [:a {:href (review-href (:run-id r)) :class "font-mono text-xs hover:underline"} (:run-id r)]
      (state-chip r)
      [:span {:class parts/muted} "asked " (parts/relative-time now-ms (:asked-at r))]
-     (counts-line r)
-     (when-let [failure (get-in r [:run :progress :error :code])]
+     (headline r)
+     (when-let [failure (get-in r [:run :error :code])]
        [:span {:class parts/faint} failure])]))
 
 (defn- pull-request-row [sys {:keys [pull-request reviews]}]
@@ -211,47 +217,44 @@
    (reviews-card sys)])
 
 ;; ----------------------------------------------------------- one review
+;;
+;; Nothing below knows what a review is made of: the phases and steps come
+;; from the branch's process, and each step is drawn from its blocks.
 
-(defn- agent-chip [status]
-  (case status
-    "done" (parts/chip "done" :green)
-    "running" (parts/chip "running" :sky)
-    "failed" (parts/chip "failed" :red)
-    "skipped" (parts/chip "skipped" :neutral)
-    (parts/chip (or status "pending") :neutral)))
+(def ^:private step-tones
+  {:done [:green "done"] :failed [:red "failed"] :skipped [:neutral "skipped"]
+   :running [:sky "running"] :pending [:neutral "pending"] :not-run [:neutral "not run"]
+   :unreadable [:amber "unreadable"]})
 
-(defn- duration [seconds]
-  (when seconds
-    (let [s (long seconds)]
-      (if (< s 60) (str s " s") (str (quot s 60) " min " (format "%02d" (rem s 60)))))))
+(defn- step-chip [state]
+  (let [[tone label] (step-tones state [:neutral (name state)])]
+    (parts/chip label tone)))
 
 (defn- progress-card [sys r]
-  (let [progress (get-in r [:run :progress])
-        now-ms (now sys)
-        heartbeat (t/parse-instant (:updated_at progress))
-        started (t/parse-instant (:started_at progress))]
+  (let [steps (get-in r [:run :steps])
+        heartbeat (get-in r [:run :updated-at])]
     [:section {:class parts/card}
      [:div {:class parts/card-heading}
       [:h2 {:class parts/heading-text} "Progress"]
       [:span {:class parts/faint}
-       (when heartbeat (list "last heartbeat " (parts/relative-time now-ms heartbeat)))
-       (when started (str " · started " (t/format-instant started)))]]
-     [:div {:class "flex flex-col gap-3 p-4"}
-      [:div {:class "flex flex-wrap gap-1.5"}
-       (for [phase ["preparing" "phase1" "phase2" "synthesis" "done"]]
-         (parts/chip phase (if (= phase (:status progress)) :sky :neutral)))]
-      [:ul {:class "grid gap-2 sm:grid-cols-2 lg:grid-cols-4"}
-       (for [agent review/agents
-             :let [a (get-in progress [:agents (keyword agent)])]]
-         [:li {:class "flex items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm dark:border-slate-800"}
-          (if (get-in r [:run :agents agent])
-            [:a {:href (review-href (:run-id r) agent) :class "hover:underline"} agent]
-            [:span agent])
-          [:span {:class "flex items-center gap-1.5"}
-           (when (and (:findings a) (= "done" (:status a)))
-             [:span {:class parts/faint} (plural (:findings a) "finding")])
-           (when (> (long (or (:attempts a) 0)) 1) (parts/chip "retried" :amber))
-           (agent-chip (:status a))]])]]]))
+       (when heartbeat (list "last heartbeat " (parts/relative-time (now sys) heartbeat)))]]
+     (if (empty? steps)
+       (parts/empty-state "The branch does not say what the run is made of yet.")
+       [:ol {:class "flex flex-col gap-3 p-4"}
+        (for [phase-steps (partition-by :phase steps)
+              :let [title (:phase-title (first phase-steps))]]
+          [:li {:class "flex flex-col gap-2"}
+           [:span {:class parts/heading-text} (str title)]
+           [:ul {:class "grid gap-2 sm:grid-cols-2 lg:grid-cols-4"}
+            (for [step phase-steps]
+              [:li {:class (str "flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm "
+                                (if (= :running (:state step))
+                                  "border-sky-300 bg-sky-50 dark:border-sky-900 dark:bg-sky-950"
+                                  "border-slate-200 dark:border-slate-800"))}
+               (if (:result step)
+                 [:a {:href (review-href (:run-id r) (:id step)) :class "hover:underline"} (str (:title step))]
+                 [:span (str (:title step))])
+               (step-chip (:state step))])]])])]))
 
 (defn- state-banner [sys r]
   (let [now-ms (now sys)]
@@ -260,15 +263,22 @@
                         (parts/relative-time now-ms (get-in r [:launch :fired-at]))
                         ". Waiting for its branch to appear.")
       :stalled (notice :warn "Its branch has said nothing since "
-                       (parts/relative-time now-ms (t/parse-instant (get-in r [:run :progress :updated_at])))
+                       (parts/relative-time now-ms (get-in r [:run :updated-at]))
                        ". Open the session to see what it is doing.")
-      :failed (let [{:keys [code message]} (get-in r [:run :progress :error])]
-                (notice :refused [:span {:class "font-semibold"} code] (when message (str " — " message))))
+      :failed (let [{:keys [code message]} (get-in r [:run :error])]
+                (notice :refused [:span {:class "font-semibold"} (str code)] (when message (str " — " message))))
       :never-started (notice :refused
                              (or (get-in r [:launch :refusal])
                                  "No branch appeared: the session never started, or could not push to the results repository."))
-      :unreadable (notice :warn "Its branch holds no progress that can be read.")
+      :unreadable (notice :warn "Its branch holds no status that can be read.")
       nil)))
+
+(defn- schema-warning [r]
+  (let [schema (get-in r [:run :schema])
+        major (fn [s] (second (re-matches #".*/(\d+).*" (str s))))]
+    (when (and schema (not= (major schema) (major review/schema)))
+      (notice :warn (str "This run is written in " schema ", and this installation reads " review/schema
+                         ". What can be read of it is shown.")))))
 
 (defn- verdict-buttons [r finding judged]
   (let [fingerprint (:fingerprint finding)
@@ -294,152 +304,127 @@
                      "dark:bg-slate-950")}
    (str text)])
 
-(defn- finding-card [r finding judged {:keys [judge? extra]}]
-  [:article {:class "flex flex-col gap-2 rounded-xl border border-slate-200 p-4 dark:border-slate-800"}
-   [:div {:class "flex flex-wrap items-center gap-2"}
-    (severity-chip (:severity finding))
-    (parts/chip (str "confidence " (:confidence finding)) :neutral)
-    [:code {:class "font-mono text-xs"} (str (:file finding) ":" (:line finding))]
-    [:span {:class parts/faint}
-     (str/join ", " (or (seq (:rules finding)) [(:rule finding)]))
-     (when (seq (:agents finding)) (str " · " (str/join ", " (:agents finding))))]
-    extra]
-   (quote-block (:quote finding))
-   [:p {:class "text-sm"} (:observation finding)]
-   (when (:why finding) [:p {:class parts/muted} (:why finding)])
-   (when (:suggestion finding)
-     [:p {:class "text-sm"} [:span {:class "font-medium"} "Suggestion: "] (:suggestion finding)])
-   (when judge? (verdict-buttons r finding judged))])
+(def ^:private finding-status-tones
+  {"kept" :green "merged" :violet "dropped" :amber "rejected" :neutral})
 
-(defn- tabs [r current]
-  (let [agent-files (get-in r [:run :agents])
-        tab (fn [href label current?]
-              [:a {:href href
-                   :class (str "whitespace-nowrap px-3 py-2 text-sm "
-                               (if current?
-                                 "border-b-2 border-slate-900 font-semibold dark:border-slate-100"
-                                 "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"))}
-               label])]
-    [:nav {:class "flex flex-wrap gap-1 border-b border-slate-200 dark:border-slate-800"}
-     (tab (review-href (:run-id r)) "Summary" (nil? current))
-     (for [agent review/agents
-           :let [file (get agent-files agent)
-                 kept (count (filter #(= "kept" (get-in % [:validation :status]))
-                                     (get-in file [:output :findings])))]]
-       (if file
-         (tab (review-href (:run-id r) agent) (str agent " · " kept) (= current agent))
-         [:span {:class "px-3 py-2 text-sm text-slate-300 dark:text-slate-700"} agent]))]))
+(defn- finding-card [r finding judged]
+  (let [{:keys [file line]} (when (map? (:location finding)) (:location finding))
+        status (when (map? (:status finding)) (:status finding))]
+    [:article {:class "flex flex-col gap-2 rounded-xl border border-slate-200 p-4 dark:border-slate-800"}
+     [:div {:class "flex flex-wrap items-center gap-2"}
+      (severity-chip (:severity finding))
+      (when file [:code {:class "font-mono text-xs"} (str file (when line (str ":" line)))])
+      (when (seq (:tags finding))
+        [:span {:class parts/faint} (str/join ", " (map str (:tags finding)))])
+      (when-let [value (:value status)]
+        (parts/chip (str value) (finding-status-tones (str value) :neutral)))
+      (when-let [reason (:reason status)] [:span {:class parts/faint} (str reason)])]
+     (when (:quote finding) (quote-block (:quote finding)))
+     (when (:body finding) (markdown/render (:body finding)))
+     (when (and (map? (:fields finding)) (seq (:fields finding)))
+       [:p {:class parts/faint}
+        (interpose " · " (for [[k v] (:fields finding)] (str (name k) ": " v)))])
+     (when (and (string? (:fingerprint finding))
+                (contains? #{nil "kept" "merged"} (:value status)))
+       (verdict-buttons r finding judged))]))
 
-(defn- summary-view [sys r]
-  (let [summary (get-in r [:run :summary])
-        judged (review/judgements sys (:run-id r))
-        c (counts-of r)]
-    (if-not summary
+(defn- unknown-block [block]
+  [:div {:class "flex flex-col gap-2"}
+   (notice :warn (str "A block of type " (pr-str (:type block)) " this installation does not show:"))
+   (quote-block (json/write-str block :escape-slash false))])
+
+(defn- block-view
+  "One block of a step, by its type. A type not known here is shown as such."
+  [r judged block]
+  (if-not (map? block)
+    (unknown-block {:type nil :value block})
+    (case (:type block)
+      "markdown" (markdown/render (:text block))
+      "code" (quote-block (:text block))
+      "stats" [:div {:class "grid grid-cols-2 gap-2 sm:grid-cols-4"}
+               (for [item (:items block) :when (map? item)]
+                 (parts/stat {:label (str (:label item)) :count (:value item) :tone (tone (:tone item))}))]
+      "table" [:div {:class "flex flex-col gap-1"}
+               (when (:title block) [:span {:class parts/heading-text} (str (:title block))])
+               [:div {:class "overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-800"}
+                [:table {:class "w-full text-sm"}
+                 [:thead [:tr {:class "text-left text-xs text-slate-500"}
+                          (for [c (:columns block)] [:th {:class "px-3 py-2 font-medium"} (str c)])]]
+                 [:tbody
+                  (for [row (:rows block)]
+                    [:tr {:class separated}
+                     (for [cell (if (sequential? row) row [row])]
+                       [:td {:class "px-3 py-2 align-top"} (str cell)])])]]]]
+      "findings" [:div {:class "flex flex-col gap-3"}
+                  (when (:title block) [:span {:class parts/heading-text} (str (:title block))])
+                  (if (empty? (:items block))
+                    [:p {:class parts/muted} "Nothing to report."]
+                    (for [item (:items block) :when (map? item)] (finding-card r item judged)))]
+      (unknown-block block))))
+
+(defn- tabs [r current-id]
+  [:nav {:class "flex flex-wrap gap-1 border-b border-slate-200 dark:border-slate-800"}
+   (for [step (get-in r [:run :steps])]
+     (if (:result step)
+       [:a {:href (review-href (:run-id r) (:id step))
+            :class (str "flex items-center gap-1.5 whitespace-nowrap px-3 py-2 text-sm "
+                        (if (= current-id (:id step))
+                          "border-b-2 border-slate-900 font-semibold dark:border-slate-100"
+                          "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"))}
+        (str (:title step))
+        (when (#{:failed :skipped} (:state step)) (step-chip (:state step)))]
+       [:span {:class "flex items-center gap-1.5 px-3 py-2 text-sm text-slate-400 dark:text-slate-600"}
+        (str (:title step))]))])
+
+(defn- step-view [sys r step]
+  (let [result (:result step)
+        judged (review/judgements sys (:run-id r))]
+    (cond
+      (nil? step) nil
+      (nil? result)
       [:section {:class parts/card}
-       (parts/empty-state
-        (if (seq (get-in r [:run :agents]))
-          "No summary yet. The files of the agents already done can be read in their tabs; they are not yet checked against each other."
-          "No summary yet."))]
+       (parts/empty-state (case (:state step)
+                            :running "This step is running: its result appears when it ends."
+                            :pending "This step has not started yet."
+                            :unreadable "This step's result cannot be read."
+                            "This step was not run."))]
+      (contains? result :markdown)
+      [:section {:class (str parts/card " px-4 py-3")} (markdown/render (:markdown result))]
+      :else
       [:div {:class "flex flex-col gap-4"}
-       [:section {:class "grid grid-cols-2 gap-2 sm:grid-cols-4"}
-        (for [s review/severities]
-          (parts/stat {:label s :count (c s)
-                       :tone (case s "blocker" (if (pos? (c s)) :red :neutral)
-                                   "major" (if (pos? (c s)) :amber :neutral) :neutral)}))]
-       [:section {:class parts/card}
-        [:div {:class parts/card-heading} [:h2 {:class parts/heading-text} "Verdict"]]
-        [:p {:class "px-4 py-3 text-sm leading-relaxed"} (:verdict summary)]]
-       [:section {:class parts/card}
-        [:div {:class parts/card-heading}
-         [:h2 {:class parts/heading-text} "Findings"]
-         [:span {:class parts/faint}
-          (str "intent: " (str/replace (str (get-in summary [:intent :status])) "_" " "))
-          (let [omitted (reduce + (map #(long (or % 0)) (vals (:omitted summary))))]
-            (when (pos? omitted) (str " · " omitted " omitted")))]]
-        (if (empty? (:findings summary))
-          (parts/empty-state "Nothing to report.")
-          [:div {:class "flex flex-col gap-3 p-4"}
-           (for [f (:findings summary)] (finding-card r f judged {:judge? true}))])]
-       [:div {:class "grid gap-4 lg:grid-cols-3"}
-        [:section {:class (str parts/card " lg:col-span-2")}
-         [:div {:class parts/card-heading} [:h2 {:class parts/heading-text} "Impact"]]
-         (if (empty? (:impact summary))
-           (parts/empty-state "Nothing to report.")
-           [:div {:class "overflow-x-auto"}
-            [:table {:class "w-full min-w-[32rem] text-sm"}
-             [:thead [:tr {:class "text-left text-xs text-slate-500"}
-                      (for [h ["Symbol" "Change" "Callers" "Entry points" "Risk"]]
-                        [:th {:class "px-4 py-2 font-medium"} h])]]
-             [:tbody
-              (for [row (:impact summary)]
-                [:tr {:class separated}
-                 [:td {:class "px-4 py-2 font-mono text-xs"} (:symbol row)]
-                 [:td {:class "px-4 py-2"} (:kind row)]
-                 [:td {:class "px-4 py-2 tabular-nums"}
-                  (str (:callers row) (when (:callers_truncated row) "+"))]
-                 [:td {:class "px-4 py-2"} (str/join ", " (:entry_points row))]
-                 [:td {:class "px-4 py-2"} (:risk row)]])]]])]
-        [:section {:class parts/card}
-         [:div {:class parts/card-heading} [:h2 {:class parts/heading-text} "Tests and limitations"]]
-         [:div {:class "flex flex-col gap-3 px-4 py-3 text-sm"}
-          (if (seq (:tests summary))
-            [:ul {:class "list-disc pl-5"}
-             (for [t (:tests summary)] [:li (str (:case t) " — " (:file t) ":" (:line t))])]
-            [:p {:class parts/muted} "No uncovered edge case reported."])
-          (when (seq (:limitations summary))
-            [:ul {:class (str "list-disc pl-5 " parts/muted)}
-             (for [l (:limitations summary)] [:li l])])]]]])))
+       (when (seq (:meta result))
+         [:section {:class (str parts/card " flex flex-wrap gap-6 px-4 py-3 text-sm")}
+          [:div [:div {:class parts/faint} "Step"] [:div (step-chip (:state step))]]
+          (for [m (:meta result) :when (map? m)]
+            [:div [:div {:class parts/faint} (str (:label m))] [:div (str (:value m))]])])
+       [:section {:class (str parts/card " flex flex-col gap-4 px-4 py-4")}
+        (if (empty? (:blocks result))
+          [:p {:class parts/muted} "Nothing to show."]
+          (for [block (:blocks result)] (block-view r judged block)))]])))
 
-(def ^:private validation-tones
-  {"kept" [:green "kept"] "merged" [:violet "merged"] "dropped" [:amber "dropped"]
-   "rejected" [:neutral "rejected"]})
+(defn- current-step
+  "The step a page shows: the one asked for, or the summary step once it has
+  a result, or the last step that has one."
+  [r step-id]
+  (let [steps (get-in r [:run :steps])
+        by-id (fn [id] (first (filter #(= id (:id %)) steps)))]
+    (or (when step-id (by-id step-id))
+        (let [summary (by-id (get-in r [:run :summary-step]))]
+          (when (:result summary) summary))
+        (last (filter :result steps)))))
 
-(defn- agent-view [sys r agent]
-  (let [file (get-in r [:run :agents agent])
-        judged (review/judgements sys (:run-id r))
-        findings (get-in file [:output :findings])
-        by-status (group-by #(get-in % [:validation :status]) findings)]
-    (if-not file
-      [:section {:class parts/card} (parts/empty-state "This agent has not written its file yet.")]
-      [:div {:class "flex flex-col gap-4"}
-       [:section {:class (str parts/card " flex flex-wrap gap-6 px-4 py-3 text-sm")}
-        (for [[label value] [["Agent" agent]
-                             ["Model" (str (:model file) (when (:effort file) (str " · " (:effort file))))]
-                             ["Status" (:status file)]
-                             ["Duration" (str (duration (:duration_s file)) " · "
-                                              (plural (or (:attempts file) 0) "attempt"))]
-                             ["Findings" (str/join " · " (for [[s n] (sort-by key (update-vals by-status count))]
-                                                           (str n " " s)))]]]
-          [:div [:div {:class parts/faint} label] [:div value]])]
-       (when-let [error (:error file)]
-         (notice :refused (:message error)))
-       (when (seq (get-in file [:output :limitations]))
-         [:ul {:class (str "list-disc pl-5 " parts/muted)}
-          (for [l (get-in file [:output :limitations])] [:li l])])
-       (if (empty? findings)
-         [:section {:class parts/card} (parts/empty-state "Nothing to report.")]
-         [:div {:class "flex flex-col gap-3"}
-          (for [status ["kept" "merged" "dropped" "rejected"]
-                f (get by-status status)
-                :let [[tone label] (validation-tones status)
-                      reason (get-in f [:validation :reason])
-                      into-fp (get-in f [:validation :merged_into])]]
-            (finding-card r (assoc f :agents nil) judged
-                          {:judge? (#{"kept" "merged"} status)
-                           :extra (list (parts/chip label tone)
-                                        (when (or reason into-fp)
-                                          [:span {:class parts/faint}
-                                           (or reason (str "into " into-fp))]))}))])])))
+(defn step-ids [r] (set (map :id (get-in r [:run :steps]))))
 
 (defn review-page
-  "One review in full: where it stands, then its summary or one agent's view."
-  [sys r {:keys [agent]}]
+  "One review in full: where it stands, then the view of one of its steps."
+  [sys r {:keys [step]}]
   (let [others (->> (review/by-pull-request sys)
                     (filter #(= (review/pull-request-key (:pull-request %))
                                 (review/pull-request-key (:pull-request r))))
                     first :reviews)
-        meta-data (get-in r [:run :meta])
-        branch (or (get-in r [:run :branch]) (get-in r [:launch :branch]))]
+        details (filter map? (get-in r [:run :process :details]))
+        branch (or (get-in r [:run :branch]) (get-in r [:launch :branch]))
+        shown (current-step r step)]
     [:div {:id "owldesk-review" :class "flex flex-col gap-4"}
      [:section {:class parts/card}
       [:div {:class "flex flex-col gap-2 px-4 py-4"}
@@ -451,12 +436,7 @@
        [:div {:class "flex flex-wrap items-center gap-2 text-sm text-slate-500 dark:text-slate-400"}
         (state-chip r)
         [:span {:class "font-mono text-xs"} (:run-id r)]
-        (when-let [head (get-in meta-data [:pr :head_sha])]
-          [:span (str "head " (subs head 0 (min 7 (count head))))])
-        (when-let [brain (:brain meta-data)]
-          [:span (str "brain " (or (:ref brain) "default") " @ " (subs (str (:sha brain)) 0 (min 7 (count (str (:sha brain))))))])
-        (when-let [{:keys [lines files]} (:diff meta-data)]
-          [:span (str (plural lines "diff line") " in " (plural files "file"))])]
+        (for [{:keys [label value]} details] [:span (str label " " value)])]
        [:div {:class "flex flex-wrap gap-2"}
         (when-let [url (get-in r [:launch :session-url])]
           [:a {:href url :target "_blank" :rel "noreferrer" :class parts/button} "Claude session ↗"])
@@ -473,12 +453,13 @@
           [:a {:href (review-href (:run-id o))
                :class (str parts/button (when (= (:run-id o) (:run-id r)) " ring-2 ring-sky-500"))}
            (:run-id o) " " (state-chip o)])])
+     (schema-warning r)
      (state-banner sys r)
      (when (and (:run r) (not= :done (:state r)))
        (progress-card sys r))
-     (when (:run r)
-       (list (tabs r agent)
-             (if agent (agent-view sys r agent) (summary-view sys r))))]))
+     (when (seq (get-in r [:run :steps]))
+       (list (tabs r (:id shown))
+             (step-view sys r shown)))]))
 
 ;; ---------------------------------------------------------------- settings
 

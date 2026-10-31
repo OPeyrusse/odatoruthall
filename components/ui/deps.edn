@@ -1,5 +1,6 @@
 {:paths ["src" "resources"]
  :deps {hiccup/hiccup {:mvn/version "2.0.0"}
+        org.clojure/data.json {:mvn/version "2.5.2"}
         poly/time {:local/root "../time"}
         poly/events {:local/root "../events"}
         poly/access {:local/root "../access"}

@@ -4,6 +4,7 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [odato.demo.reviews :as demo]
+            [odato.github.interface]
             [odato.owllie.interface :as owllie]
             [odato.review.interface :as review]
             [odato.server.handler :as handler]
@@ -70,10 +71,12 @@
         (is (str/includes? list-body "Cache the snapshot"))
         (is (str/includes? list-body "1 blocker")))
       (let [page (:body (GET sys (str "/owldesk/review/" done-id)))]
-        (is (str/includes? page "Verdict"))
+        (is (str/includes? page "Verdict") "the summary step opens the page")
         (is (str/includes? page "False positive")))
       (is (str/includes? (:body (GET sys (str "/owldesk/review/" done-id "/general-rules")))
                          "rejected"))
+      (is (str/includes? (:body (GET sys (str "/owldesk/review/" done-id "/inputs")))
+                         "Description") "a markdown step is shown as markdown")
       (is (= 404 (:status (GET sys (str "/owldesk/review/" done-id "/nobody")))))
       (is (= 404 (:status (GET sys "/owldesk/review/20200101T0000Z-0000")))))))
 
@@ -81,7 +84,7 @@
   (let [sys (installation)]
     (POST sys "/settings/owldesk" settings-form)
     (review/read-results! sys)
-    (let [fingerprint (-> (review/review sys done-id) :run :summary :findings first :fingerprint)]
+    (let [fingerprint (key (first (review/findings (review/review sys done-id))))]
       (is (= 204 (:status (POST sys (str "/owldesk/review/" done-id "/judge")
                                 (str "fingerprint=" fingerprint "&verdict=false-positive")))))
       (is (= {fingerprint :false-positive} (review/judgements sys done-id)))
@@ -96,3 +99,16 @@
     (let [response (POST sys (str "/owldesk/review/" done-id "/remove") "" {})]
       (is (= 303 (:status response)))
       (is (nil? (review/review sys done-id))))))
+
+(deftest a-running-review-shows-its-process
+  (let [sys (installation)
+        stalled-id (demo/run-id (- now (t/hours 1)) "c412")]
+    (POST sys "/settings/owldesk" settings-form)
+    (odato.github.interface/mock-write-branch! (:github sys) {:owner "activeviam" :name "owllie-results"}
+                                               (demo/branch pr-412 stalled-id)
+                                               (demo/stalled-run pr-412 stalled-id (- now (t/minutes 10))))
+    (review/read-results! sys)
+    (let [page (:body (GET sys (str "/owldesk/review/" stalled-id)))]
+      (is (str/includes? page "Progress"))
+      (is (str/includes? page "Phase 2"))
+      (is (str/includes? page "pending")))))

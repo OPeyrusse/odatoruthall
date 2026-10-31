@@ -164,10 +164,19 @@
     (testing "what a run's files say is there to show"
       (let [done (review/review sys (:done ids))]
         (is (= (:title pr-412) (:title done)))
-        (is (= 8 (count (get-in done [:run :agents]))))
-        (is (seq (get-in done [:run :summary :findings])))
-        (is (= "diff_too_large" (get-in (review/review sys (:failed ids))
-                                        [:run :progress :error :code])))))
+        (is (= "synthesis" (get-in done [:run :summary-step])))
+        (is (= 10 (count (get-in done [:run :steps]))) "the process the branch describes")
+        (is (every? #{:done} (map :state (get-in done [:run :steps]))))
+        (is (seq (review/findings done)))
+        (is (= "diff_too_large" (get-in (review/review sys (:failed ids)) [:run :error :code])))
+        (testing "a failed run's steps without a file were not run"
+          (is (every? #{:not-run} (map :state (get-in (review/review sys (:failed ids)) [:run :steps])))))))
+    (testing "a running run: steps done, the first phase still waiting is running, the rest pending"
+      (let [steps (get-in (review/review sys (:stalled ids)) [:run :steps])
+            by-phase (into {} (map (fn [[phase ss]] [phase (set (map :state ss))])
+                                   (group-by :phase steps)))]
+        (is (= {"prepare" #{:done} "phase1" #{:done} "phase2" #{:running} "synthesis" #{:pending}}
+               by-phase))))
     (testing "the reviews of one pull request are grouped, the latest first"
       (is (= [[(:stalled ids) (:failed ids) (:done ids)]]
              (map #(map :run-id (:reviews %)) (review/by-pull-request sys)))))))
@@ -181,8 +190,8 @@
       (is (= blobs (count (calls-of sys :blob))) "nothing moved, nothing is read again")
       (testing "a branch that moves is read again, and only what changed"
         (github/mock-write-branch! (:github sys) results (demo/branch pr-412 (:stalled ids))
-                                   {"owllie/progress.json"
-                                    (json/write-str {:status "synthesis"
+                                   {"owllie/status.json"
+                                    (json/write-str {:state "running"
                                                      :updated_at (str (java.time.Instant/ofEpochMilli (now sys)))})})
         (review/read-results! sys)
         (is (= (inc blobs) (count (calls-of sys :blob))))
@@ -191,6 +200,39 @@
         (github/delete-branch (:github sys) (assoc results :branch (demo/branch pr-412 (:failed ids))))
         (review/read-results! sys)
         (is (nil? (review/review sys (:failed ids))))))))
+
+(deftest the-reader-knows-only-the-process-and-the-blocks
+  (let [run-id (demo/run-id (- (t/parse-instant testing/default-instant) (t/hours 1)) "0a0a")
+        process {:schema "owllie-run/2" :title "Something new" :summary_step "verdict"
+                 :pull_request {:url "https://github.com/acme/widget/pull/412"}
+                 :phases [{:id "one" :title "One"
+                           :steps [{:id "notes" :title "Notes" :file "owllie/steps/notes.md"}
+                                   {:id "odd" :title "Odd" :file "owllie/steps/odd.json"}
+                                   {:id "late" :title "Late" :file "owllie/steps/late.json"}]}
+                          {:id "two" :title "Two"
+                           :steps [{:id "verdict" :title "Verdict" :file "owllie/steps/verdict.json"}]}]}
+        sys (system {:branches {(demo/branch pr-412 run-id)
+                                {"owllie/process.json" (json/write-str process)
+                                 "owllie/status.json" (json/write-str {:state "running"
+                                                                       :updated_at testing/default-instant})
+                                 "owllie/steps/notes.md" "# Notes\n\nAnything."
+                                 "owllie/steps/odd.json" "{not json"
+                                 "owllie/steps/verdict.json"
+                                 (json/write-str {:status "done" :blocks [{:type "hologram" :x 1}]})}}})]
+    (review/read-results! sys)
+    (let [r (review/review sys run-id)
+          states (into {} (map (juxt :id :state) (get-in r [:run :steps])))]
+      (is (= "Something new" (:title r)))
+      (is (= {"notes" :done "odd" :running "late" :running "verdict" :done} states)
+          "a step without a readable file, in the first phase still waiting, is running")
+      (is (= "# Notes\n\nAnything." (get-in (first (get-in r [:run :steps])) [:result :markdown]))))
+    (testing "once the run has ended, a missing file was not run and an unreadable one is said so"
+      (github/mock-write-branch! (:github sys) results (demo/branch pr-412 run-id)
+                                 {"owllie/status.json" (json/write-str {:state "done"
+                                                                        :updated_at testing/default-instant})})
+      (review/read-results! sys)
+      (is (= {"notes" :done "odd" :unreadable "late" :not-run "verdict" :done}
+             (into {} (map (juxt :id :state) (get-in (review/review sys run-id) [:run :steps]))))))))
 
 (deftest a-launch-meets-its-branch
   (let [sys (system)
@@ -210,7 +252,7 @@
         sys (system {:branches branches})
         _ (review/read-results! sys)
         done (review/review sys (:done ids))
-        fingerprint (:fingerprint (first (get-in done [:run :summary :findings])))]
+        fingerprint (key (first (review/findings done)))]
     (is (:ok (review/judge! sys (:done ids) fingerprint :false-positive)))
     (is (= {fingerprint :false-positive} (review/judgements sys (:done ids))))
     (is (:ok (review/judge! sys (:done ids) fingerprint :relevant)))

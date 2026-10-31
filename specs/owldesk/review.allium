@@ -8,9 +8,16 @@
 -- cloud session running Owllie, and hands it a request naming the pull
 -- request, the repository the results go to, and the branch they go on. From
 -- then on, everything the installation knows about the run it reads back from
--- that branch: one branch per run, written by the session alone, with a
--- progress file updated at each step, one file per review agent, and a summary
--- once the run is done.
+-- that branch: one branch per run, written by the session alone.
+--
+-- What the run is made of is not known here in advance: the branch says it.
+-- The run writes its process first -- phases that follow one another, each
+-- made of steps that run side by side, each step naming the file it will
+-- write when it ends -- then a status it keeps up to date, then each step's
+-- file as the step ends. A step's file is a list of generic blocks (text,
+-- code, figures, tables, findings) or plain markdown, shown as it comes. So
+-- Owllie can add an agent, a phase or a section without anything here
+-- changing; only the few block types and the two files above are shared.
 --
 -- So the results repository, not this installation, is where a run lives. The
 -- installation keeps only what the branch cannot say: that a review was asked
@@ -77,7 +84,17 @@ enum LaunchStatus {
     | refused       -- the launcher said no
 }
 
-enum RunProgress { preparing | phase1 | phase2 | synthesis | done | failed }
+enum RunState { running | done | failed }
+
+enum StepState {
+    done
+    | failed
+    | skipped
+    | running           -- no result yet, in the first phase still waiting on one
+    | pending           -- no result yet, in a later phase
+    | not_run           -- no result, and the run has ended
+    | unreadable        -- a result that cannot be read, once the run has ended
+}
 
 enum FindingVerdict { relevant | false_positive }
 
@@ -88,6 +105,15 @@ enum FindingVerdict { relevant | false_positive }
 value PullRequestReference {
     repository: settings/RepositoryReference
     number: Integer
+}
+
+value RunStep {
+    -- One step of a run's process, and what its file says.
+    phase: String
+    id: String
+    title: String
+    file: String
+    state: StepState
 }
 
 value RunFailure {
@@ -115,10 +141,12 @@ external entity ResultsBranch {
     head: String                    -- the commit the branch points at
     run_id: String
     pull_request: PullRequestReference
-    progress: RunProgress?
-    updated_at: Timestamp?          -- the heartbeat of the progress file
+    state: RunState?                -- null when the status cannot be read
+    updated_at: Timestamp?          -- the heartbeat of the status
     failure: RunFailure?
-    has_summary: Boolean
+    steps: List<RunStep>            -- the process, phase by phase, each step
+                                    -- with the state its file gives it
+    summary_step: String?           -- the step to show first
 }
 
 external entity OwllieSession {
@@ -199,10 +227,11 @@ entity ReviewRun {
     branch: String
     head: String
     pull_request: PullRequestReference
-    progress: RunProgress?
+    state: RunState?
     updated_at: Timestamp?
     failure: RunFailure?
-    has_summary: Boolean
+    steps: List<RunStep>
+    summary_step: String?
 }
 
 entity Review {
@@ -215,10 +244,9 @@ entity Review {
 
     pull_request: PullRequestReference
 
-    is_done: run != null and run.progress = done
-    is_failed: run != null and run.progress = failed
-    is_under_way: run != null
-        and run.progress in {preparing, phase1, phase2, synthesis}
+    is_done: run != null and run.state = done
+    is_failed: run != null and run.state = failed
+    is_under_way: run != null and run.state = running
     is_stalled: is_under_way and run.updated_at + config.stall_after <= now
     is_running: is_under_way and not is_stalled
     is_starting: run = null
@@ -263,7 +291,7 @@ entity ResultsPolling {
 config {
     -- A launch whose branch has not appeared after this never started.
     start_timeout: Duration = 5.minutes
-    -- A run whose progress file has not moved for this long is stalled.
+    -- A run whose status has not moved for this long is stalled.
     stall_after: Duration = 20.minutes
     -- How often the branches are read while a review is in flight, and
     -- otherwise.
@@ -509,20 +537,41 @@ rule ResultsBranchRead {
     ensures:
         if exists known:
             known.head = branch.head
-            known.progress = branch.progress
+            known.state = branch.state
             known.updated_at = branch.updated_at
             known.failure = branch.failure
-            known.has_summary = branch.has_summary
+            known.steps = branch.steps
+            known.summary_step = branch.summary_step
         else:
             ReviewRun.created(
                 run_id: branch.run_id,
                 branch: branch.name,
                 head: branch.head,
                 pull_request: branch.pull_request,
-                progress: branch.progress,
+                state: branch.state,
                 updated_at: branch.updated_at,
                 failure: branch.failure,
-                has_summary: branch.has_summary)
+                steps: branch.steps,
+                summary_step: branch.summary_step)
+}
+
+rule StepStatesAreReadFromTheirFiles {
+    when: ResultsBranchObserved(branch)
+    ensures: StepStatesDerived(branch: branch)
+
+    @guidance
+        -- A step's state is read from its file, and from where the run
+        -- stands. A file that says done, failed or skipped is that; a
+        -- markdown file is done. While the run is running, a step without a
+        -- readable file is running when its phase is the first that still
+        -- has such a step, and pending when it comes later: a commit is
+        -- never seen half written, but a reader does not judge a run in
+        -- flight on one file. Once the run has ended, a step without a file
+        -- was not run, and one whose file cannot be read is unreadable.
+        -- Fields a block carries that are not known here are ignored, and a
+        -- block of a type not known here is shown as such, with what it
+        -- holds; a process of another major schema version is shown with a
+        -- warning.
 }
 
 rule ResultsBranchGone {

@@ -24,12 +24,10 @@
    :fires-per-hour 30
    :pull-request-state-ttl-ms (t/hours 1)})
 
-(def agents
-  "The review agents, in the order Owllie runs them."
-  ["intent-reader" "general-rules" "edge-case-tests" "impact" "naming"
-   "intent-comparator" "concurrency" "performance"])
-
-(def severities ["blocker" "major" "minor" "info"])
+(def schema
+  "The layout this installation reads. Another major version is shown with a
+  warning: what can be read of it still is."
+  "owllie-run/2")
 
 (defn- durable [sys] (db/durable (:store sys)))
 (defn- volatile [sys] (db/volatile* (:store sys)))
@@ -52,20 +50,65 @@
   (let [d (get-in files [path :data])]
     (when (map? d) d)))
 
+(def ^:private step-statuses {"done" :done "failed" :failed "skipped" :skipped})
+
+(defn- step-result
+  "What a step's file says: `[:done|:failed|:skipped result]`, or nil when
+  there is no file, or none that can be read."
+  [files path]
+  (let [d (get-in files [path :data])]
+    (cond
+      (string? d) [:done {:markdown d}]
+      (map? d) [(get step-statuses (:status d) :done) d]
+      :else nil)))
+
+(defn steps
+  "The steps of a process, phase by phase, each with the state read from its
+  file and from where the run stands (specs/owldesk/review.allium,
+  StepStatesAreReadFromTheirFiles)."
+  [process files run-state]
+  (let [phases (filter map? (:phases process))
+        present? (fn [step] (some? (step-result files (:file step))))
+        current (first (keep-indexed (fn [i phase] (when-not (every? present? (:steps phase)) i)) phases))]
+    (vec
+     (for [[i phase] (map-indexed vector phases)
+           step (:steps phase)
+           :when (map? step)
+           :let [[result-state result] (step-result files (:file step))
+                 file-there? (contains? files (:file step))]]
+       {:phase (str (or (:id phase) i))
+        :phase-title (or (:title phase) (:id phase))
+        :id (str (:id step))
+        :title (or (:title step) (:id step))
+        :file (:file step)
+        :result result
+        :state (cond
+                 result-state result-state
+                 (= :running run-state) (if (= i current) :running :pending)
+                 file-there? :unreadable
+                 :else :not-run)}))))
+
+(defn- run-state [status]
+  (case (:state status) "running" :running "done" :done "failed" :failed nil))
+
 (defn- run-view [run]
   (when run
-    (let [files (:review-run/files run)]
+    (let [files (:review-run/files run)
+          process (data files results/process-file)
+          status (data files results/status-file)
+          state (run-state status)]
       {:branch (:review-run/branch run)
        :head (:review-run/head run)
        :read-at (:review-run/read-at run)
-       :meta (data files "owllie/meta.json")
-       :progress (data files "owllie/progress.json")
-       :progress-unreadable? (= ::results/invalid (get-in files ["owllie/progress.json" :data]))
-       :summary (data files "owllie/summary.json")
-       :agents (into {} (for [a agents
-                              :let [d (data files (str "owllie/agents/" a ".json"))]
-                              :when d]
-                          [a d]))})))
+       :process process
+       :schema (:schema process)
+       :status status
+       :state state
+       :updated-at (t/parse-instant (:updated_at status))
+       :error (when (map? (:error status)) (:error status))
+       :headline (filter map? (:headline status))
+       :summary-step (:summary_step process)
+       :steps (steps process files state)})))
 
 (defn- launch-view [row]
   (when row
@@ -80,24 +123,19 @@
      :session-url (:review-launch/session-url row)
      :refusal (:review-launch/refusal row)}))
 
-(def ^:private under-way #{"preparing" "phase1" "phase2" "synthesis"})
-
 (defn state
   "What a review is, now: `:starting`, `:running`, `:stalled`, `:done`,
   `:failed`, `:never-started`, or `:unreadable` when its branch holds no
-  progress that can be read."
+  status that can be read."
   [{:keys [launch run asked-at]} now-ms]
   (let [{:keys [start-timeout-ms stall-after-ms]} timing]
     (if run
-      (let [progress (:progress run)
-            status (:status progress)
-            heartbeat (or (t/parse-instant (:updated_at progress)) asked-at)]
-        (cond
-          (= "done" status) :done
-          (= "failed" status) :failed
-          (contains? under-way status)
-          (if (and heartbeat (<= (+ heartbeat stall-after-ms) now-ms)) :stalled :running)
-          :else :unreadable))
+      (let [heartbeat (or (:updated-at run) asked-at)]
+        (case (:state run)
+          :done :done
+          :failed :failed
+          :running (if (and heartbeat (<= (+ heartbeat stall-after-ms) now-ms)) :stalled :running)
+          :unreadable))
       (cond
         (= :refused (:status launch)) :never-started
         (> (+ (:fired-at launch) start-timeout-ms) now-ms) :starting
@@ -121,10 +159,10 @@
                 :run (run-view run)
                 :asked-at (owllie/run-id-instant run-id)
                 :pull-request (or launch-pr run-pr)}
-        meta-pr (get-in review [:run :meta :pr])]
+        title (get-in review [:run :process :title])]
     (assoc review
            :state (state review now-ms)
-           :title (or (:title meta-pr) (get-in review [:launch :title])))))
+           :title (or (when (string? title) title) (get-in review [:launch :title])))))
 
 (defn reviews
   "Every review the installation knows of — launched here, or found on a
@@ -280,17 +318,20 @@
 ;; ----------------------------------------------------------------- findings
 
 (defn findings
-  "Every finding a review shows, by fingerprint: those of the summary first,
-  then those the agents kept or merged."
+  "Every finding a review's steps show, by fingerprint, as `{:fingerprint
+  :severity :location :quote :body :tags :status :step}` — the summary step's
+  first, so a finding judged reads the way the summary put it."
   [review]
-  (let [summary (get-in review [:run :summary :findings])
-        from-agents (for [[agent file] (get-in review [:run :agents])
-                          f (get-in file [:output :findings])
-                          :when (and (map? f) (#{"kept" "merged"} (get-in f [:validation :status])))]
-                      (assoc f :agents [agent] :rules [(:rule f)]))]
+  (let [summary-id (get-in review [:run :summary-step])
+        ordered (sort-by #(if (= summary-id (:id %)) 0 1) (get-in review [:run :steps]))]
     (reduce (fn [m f] (if (contains? m (:fingerprint f)) m (assoc m (:fingerprint f) f)))
             {}
-            (filter (comp string? :fingerprint) (concat summary from-agents)))))
+            (for [step ordered
+                  block (get-in step [:result :blocks])
+                  :when (and (map? block) (= "findings" (:type block)))
+                  item (:items block)
+                  :when (and (map? item) (string? (:fingerprint item)))]
+              (assoc item :step (:id step))))))
 
 (defn- feedback-id [run-id fingerprint] (str run-id "/" fingerprint))
 
@@ -314,13 +355,15 @@
                     :feedback/fingerprint fingerprint
                     :feedback/pull-request (pull-request-key (:pull-request r))
                     :feedback/verdict verdict
-                    :feedback/rule (str/join ", " (or (seq (:rules finding)) [(:rule finding)]))
-                    :feedback/severity (:severity finding)
-                    :feedback/file (:file finding)
-                    :feedback/line (:line finding)
-                    :feedback/quote (:quote finding)
-                    :feedback/observation (:observation finding)
-                    :feedback/agents (vec (:agents finding))
+                    :feedback/rule (str/join ", " (map str (:tags finding)))
+                    :feedback/severity (some-> (:severity finding) str)
+                    :feedback/file (some-> (get-in finding [:location :file]) str)
+                    :feedback/line (get-in finding [:location :line])
+                    :feedback/quote (some-> (:quote finding) str)
+                    :feedback/observation (some-> (:body finding) str)
+                    :feedback/agents (vec (or (some-> (get-in finding [:fields :agents]) str
+                                                      (str/split #",\s*"))
+                                              [(:step finding)]))
                     :feedback/judged-at (now sys)})
           (emit! sys {:type :review/judged :run-id run-id})
           {:ok true})

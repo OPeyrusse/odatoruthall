@@ -86,11 +86,16 @@
                            (owldesk/launch-outcome outcome)
                            (owldesk/body sys {:outcome outcome})]))))
 
-(defn review-page [sys review agent]
+(defn review-page [sys review step]
   (document (layout/page sys {:title (str "review " (:run-id review)) :section :owldesk}
                          [:div {:data-on-load (str "@get('/sse/owldesk/review/" (:run-id review)
-                                                   (when agent (str "/" agent)) "')")}
-                          (owldesk/review-page sys review {:agent agent})])))
+                                                   (when step (str "/" step)) "')")}
+                          (owldesk/review-page sys review {:step step})])))
+
+(defn review-step?
+  "Whether `step` names a step of the review's process."
+  [review step]
+  (contains? (owldesk/step-ids review) step))
 
 (defn cleanup-page
   ([sys] (cleanup-page sys nil))
@@ -115,7 +120,7 @@
 (defn day-fragment [sys day] (render (worklog/day-page sys day)))
 (defn owldesk-fragment [sys] (render (owldesk/body sys {})))
 (defn launch-outcome-fragment [outcome] (render (owldesk/launch-outcome outcome)))
-(defn review-fragment [sys review agent] (render (owldesk/review-page sys review {:agent agent})))
+(defn review-fragment [sys review step] (render (owldesk/review-page sys review {:step step})))
 (defn review-settings-fragment [sys outcome]
   (render (owldesk/settings-section sys {:outcome outcome})))
 

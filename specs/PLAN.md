@@ -315,6 +315,12 @@ These settle worklog:
 - **Cleanup is asked for**, previewed, and needs its own credential
   (`OWLLIE_RESULTS_TOKEN`) that may delete branches of the results repository;
   `GITHUB_TOKEN` stays read-only.
+- **The reader is generic.** The branch says what the run is made of
+  (`process.json`: phases in sequence, steps in parallel, each naming the file
+  it writes when it ends) and where it stands (`status.json`). Each step is a
+  list of generic blocks — markdown, code, stats, table, findings — or plain
+  markdown. owldesk knows nothing else of Owllie, so the review can change
+  without owldesk changing.
 - **Timeouts are spec constants** (start timeout, stall threshold, reading
   intervals), to be tuned once real runs have been timed.
 

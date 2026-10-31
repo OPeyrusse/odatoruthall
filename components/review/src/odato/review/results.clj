@@ -18,16 +18,18 @@
             [odato.review.settings :as settings]
             [odato.time.interface :as t]))
 
-(def results-dir "owllie/")
+(def process-file "owllie/process.json")
+(def status-file "owllie/status.json")
 
-(def read-files
-  "What is read of a branch: everything a page shows. The inputs and the
-  markdown report stay on the branch."
-  #{"owllie/meta.json" "owllie/progress.json" "owllie/summary.json"})
-
-(defn- wanted? [path]
-  (or (contains? read-files path)
-      (and (str/starts-with? path "owllie/agents/") (str/ends-with? path ".json"))))
+(defn- step-files
+  "The files a process says its steps write."
+  [process]
+  (when (map? process)
+    (set (for [phase (:phases process)
+               step (:steps phase)
+               :let [file (:file step)]
+               :when (string? file)]
+           file))))
 
 (defn- volatile [sys] (db/volatile* (:store sys)))
 (defn- now [sys] (t/now-ms (:clock sys)))
@@ -37,6 +39,11 @@
   [content]
   (try (json/read-str (str content) :key-fn keyword)
        (catch Exception _ ::invalid)))
+
+(defn- parse-file
+  "What a file holds: JSON parsed, markdown as text, anything else as text."
+  [path content]
+  (if (str/ends-with? path ".json") (parse-json content) (str content)))
 
 ;; ------------------------------------------------------------------ polling
 
@@ -74,30 +81,40 @@
 
 (defn- read-branch
   "What changed on one branch since it was last read, as the run's new files,
-  or `{:failure ...}`."
+  or `{:failure ...}`. The process is read first: it says which other files
+  matter."
   [sys repository {:keys [sha]} previous-files]
-  (let [tree (github/tree (:github sys) (assoc repository :sha sha))]
+  (let [tree (github/tree (:github sys) (assoc repository :sha sha))
+        fetch (fn [path blob-sha]
+                (if (= blob-sha (get-in previous-files [path :sha]))
+                  (get previous-files path)
+                  (let [blob (github/blob (:github sys) (assoc repository :sha blob-sha))]
+                    (settings/observe-budget! sys blob)
+                    (if (or (:failure blob) (:retry blob))
+                      {:failure (or (:failure blob) :budget-exhausted)}
+                      {:sha blob-sha :data (parse-file path (:content blob))}))))]
     (settings/observe-budget! sys tree)
     (if (or (:failure tree) (:retry tree))
       {:failure (or (:failure tree) :budget-exhausted)}
-      (reduce
-       (fn [files {:keys [path] blob-sha :sha}]
-         (if (= blob-sha (get-in previous-files [path :sha]))
-           (assoc files path (get previous-files path))
-           (let [blob (github/blob (:github sys) (assoc repository :sha blob-sha))]
-             (settings/observe-budget! sys blob)
-             (if (or (:failure blob) (:retry blob))
-               (reduced {:failure (or (:failure blob) :budget-exhausted)})
-               (assoc files path {:sha blob-sha :data (parse-json (:content blob))})))))
-       {}
-       (filter (comp wanted? :path) (:entries tree))))))
+      (let [shas (into {} (map (juxt :path :sha)) (:entries tree))
+            process (when-let [blob-sha (get shas process-file)] (fetch process-file blob-sha))]
+        (if (:failure process)
+          process
+          (reduce
+           (fn [files path]
+             (if-let [blob-sha (get shas path)]
+               (let [file (fetch path blob-sha)]
+                 (if (:failure file) (reduced file) (assoc files path file)))
+               files))
+           (cond-> {} process (assoc process-file process))
+           (cons status-file (step-files (:data process)))))))))
 
 (defn- pull-request-of
   "The pull request a run reviews, with its names as GitHub writes them: from
-  its meta file when it has one, from the branch otherwise."
+  its process when it can be read, from the branch otherwise."
   [branch files]
-  (or (some-> (get-in files ["owllie/meta.json" :data])
-              (#(when (map? %) (get-in % [:request :pr_url])))
+  (or (some-> (get-in files [process-file :data])
+              (#(when (map? %) (get-in % [:pull_request :url])))
               owllie/parse-pull-request-url)
       {:repository {:owner (:owner branch) :name (:name branch)} :number (:number branch)}))
 
