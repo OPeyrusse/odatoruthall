@@ -193,6 +193,64 @@ docker compose down -v                 # stop and throw the worklog away
 It is a convenience, not a requirement: `docker build` and `docker run` above do
 the same thing by hand, and neither the jar nor the image needs compose to run.
 
+## Nix and home-manager
+
+The repository is a flake: it builds the jar from the sources and exports a
+home-manager module running the server as a systemd user service. Running as
+the operator, the server reaches the programs installed in their profile — the
+Claude CLI of owldesk among them.
+
+```nix
+# flake.nix of the home-manager configuration
+inputs.odatoruthall = {
+  url = "github:OPeyrusse/odatoruthall";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+
+# home-manager modules
+modules = [
+  odatoruthall.homeManagerModules.default
+  {
+    services.odatoruthall = {
+      enable = true;
+      environment = {
+        JIRA_BASE_URL = "https://acme.atlassian.net";
+        JIRA_EMAIL = "me@acme.com";
+        # Secrets are read when the service starts, never written in the store
+        GITHUB_TOKEN.command = "pass show work/github-token";
+        JIRA_TOKEN.file = "/run/user/1000/secrets/jira-token";
+      };
+    };
+  }
+];
+```
+
+Every variable of [Credentials](#credentials) is an option of
+`services.odatoruthall.environment`, and takes one of:
+
+- a string, or `{ value = "…"; }`: a literal, written in the Nix store, so
+  never a secret. systemd specifiers are expanded (`%h`, `%S`, …);
+- `{ file = "…"; }`: a file read when the service starts, as written by
+  sops-nix, agenix, or anything else;
+- `{ command = "…"; }`: a shell command printing the value, run when the service
+  starts with the PATH of the service. A failing command stops the start.
+
+The worklog is kept in `~/.local/state/odatoruthall/odatoruthall.edn` unless
+`ODATO_DB_FILE` says otherwise. `javaOptions` and `extraPath` complete the JVM
+options and the PATH of the service; see _nix/module.nix_.
+
+```sh
+systemctl --user status odatoruthall
+journalctl --user -u odatoruthall -f
+```
+
+The nix build pins the Maven dependencies in _deps-lock.json_. Regenerate it
+after any change of a `deps.edn`:
+
+```sh
+nix run .#deps-lock
+```
+
 ## Everything else
 
 ```sh
