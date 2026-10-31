@@ -8,4 +8,6 @@
         poly/collector {:local/root "../collector"}
         poly/work-item {:local/root "../work-item"}
         poly/worklog {:local/root "../worklog"}
-        poly/discovery {:local/root "../discovery"}}}
+        poly/discovery {:local/root "../discovery"}
+        poly/owllie {:local/root "../owllie"}
+        poly/review {:local/root "../review"}}}

@@ -4,16 +4,19 @@
 -- which applications this installation runs and whether it can reach what they
 -- depend on.
 --
--- Two applications hang off this shell: gitdesk, which watches other people's
--- pull requests, and worklog, which is the operator's own time. The Jira badge
--- serves both -- gitdesk never needs Jira, and worklog cannot log a minute
--- without it.
+-- Three applications hang off this shell: gitdesk, which watches other
+-- people's pull requests; worklog, which is the operator's own time; and
+-- owldesk, which follows the automated reviews Owllie runs on pull requests.
+-- The Jira badge serves worklog -- gitdesk and owldesk never need Jira -- and
+-- the Owllie badge says whether a review can be launched.
 
 use "./access.allium" as access
 use "./config.allium" as settings
 use "../gitdesk/collection.allium" as collection
 use "../gitdesk/dashboard.allium" as gitdesk
 use "../worklog/timesheet.allium" as worklog
+use "../owldesk/owldesk.allium" as owldesk
+use "../owldesk/review.allium" as review
 
 ------------------------------------------------------------
 -- Surfaces
@@ -35,6 +38,8 @@ surface Shell {
         collection/snapshot.has_ever_collected
         collection/snapshot.oldest_success_at
         collection/snapshot.failed_sources.count
+        review/review_settings.launcher
+        review/results_access.status
 
     -- The navigation. The checker does not resolve surface names across
     -- modules (allium-cli 3.6.1), so it reports these edges as unknown names;
@@ -46,17 +51,20 @@ surface Shell {
         gitdesk/TeamWork
         collection/CollectionStatus
         worklog/Timesheet
+        owldesk/Reviews
         settings/Settings
+        owldesk/ReviewSettingsPanel
 
     @guarantee OneOperatorThroughout
-        -- Both applications are the same operator's: the GitHub badge names
+        -- All three applications are the same operator's: the GitHub badge names
         -- the owner of the GitHub credential, and every surface below serves
         -- that operator.
 
     @guarantee EachApplicationSaysWhatItNeeds
         -- gitdesk works with GitHub alone; worklog needs Jira as well, and
         -- says so through the Jira badge rather than by failing when the
-        -- operator tries to log time.
+        -- operator tries to log time. owldesk needs GitHub and a launcher,
+        -- and its badge says whether a review can be launched.
 
     @guarantee BadgesSayWhatIsReachable
         -- The connection badges say whether each service is reachable and, for

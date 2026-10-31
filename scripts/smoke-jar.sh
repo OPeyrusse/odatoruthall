@@ -22,10 +22,10 @@ until curl -fsS "http://127.0.0.1:$port/gitdesk" -o /dev/null 2>/dev/null; do
     sleep 1
 done
 
-for path in /gitdesk /worklog /settings /css/app.css /js/datastar.js; do
+for path in /gitdesk /worklog /owldesk /settings /css/app.css /js/datastar.js; do
     code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$path")
     [ "$code" = "200" ] || { echo "$path answered $code" >&2; exit 1; }
     echo "$path $code"
 done
 
-echo "the jar serves both applications"
+echo "the jar serves every application"

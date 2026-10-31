@@ -20,12 +20,24 @@
      :failures {:mentions :service-error}        ; this source always fails
      :fail-after {:mentions 1}                   ; ... or fails on page n
      :budget   {:remaining 4999 :resets-at 123}  ; a fixed budget
-     :budget-sequence [{:remaining 1 ...} {:remaining 0 ...}]}
+     :budget-sequence [{:remaining 1 ...} {:remaining 0 ...}]
+     :repositories {\"acme/owllie-results\" {:default-branch \"main\"
+                                           :files #{\".owllie-results\"}}}
+     :pull-request-details {\"acme/widget#12\" {:title ... :author ... :state :open
+                                              :closed-at nil :head-sha ...}}
+     :branches {\"acme/owllie-results\" {\"review/...\" {\"owllie/meta.json\" \"{...}\"}}}
+     :delete-failure :credential-rejected}       ; deleting a branch fails
+
+  A repository missing from `:repositories` is not found. The branches are
+  held in the client's own state, so `write-branch!` can move one under a
+  reader's eyes, the way a running review does.
 
   `:budget-sequence` is consumed one entry per answer and its last entry
   repeats, which is how a test makes the budget run out halfway through a
   source and watches the cycle wait rather than fail."
-  (:require [odato.github.protocol :as protocol]))
+  (:require [clojure.string :as str]
+            [odato.github.protocol :as protocol])
+  (:import (java.security MessageDigest)))
 
 (def ^:private big-budget {:remaining 4999 :resets-at nil})
 
@@ -63,6 +75,25 @@
         (when (>= page-number (long n)) (get-in script [:fail-after-reason key]
                                                :service-error)))))
 
+;; ------------------------------------------------------------ repositories
+
+(defn- sha1 [s]
+  (let [digest (.digest (MessageDigest/getInstance "SHA-1") (.getBytes (str s) "UTF-8"))]
+    (apply str (map #(format "%02x" %) digest))))
+
+(defn- repo-key [{:keys [owner name]}] (str owner "/" name))
+
+(defn- branch-sha [files]
+  (sha1 (str/join "\n" (for [[path content] (sort files)] (str path "\u0000" (sha1 content))))))
+
+(defn- answer [state script op request f]
+  (swap! state update :calls conj {:op op :request request})
+  (merge (f) {:budget (next-budget! state script)}))
+
+(defn- find-branch [state request]
+  (let [branches (get-in @state [:branches (repo-key request)])]
+    (some (fn [[branch files]] (when (= (:sha request) (branch-sha files)) files)) branches)))
+
 (defrecord MockGithub [script state]
   protocol/GithubClient
   (-whoami [_]
@@ -92,10 +123,76 @@
         {:failure failure :budget budget}
         (let [{:keys [items next-cursor]}
               (page script (get-in script [:activities source] []) cursor)]
-          {:activities items :next-cursor next-cursor :budget budget})))))
+          {:activities items :next-cursor next-cursor :budget budget}))))
+
+  protocol/GithubRepositories
+  (-repository [_ request]
+    (answer state script :repository request
+            #(if-let [r (get-in script [:repositories (repo-key request)])]
+               {:repository {:default-branch (:default-branch r "main") :private true}}
+               {:failure :not-found})))
+
+  (-file-exists [_ request]
+    (answer state script :file-exists request
+            #(if-let [r (get-in script [:repositories (repo-key request)])]
+               {:exists (contains? (set (:files r)) (:path request))}
+               {:failure :not-found})))
+
+  (-pull-request [_ request]
+    (answer state script :pull-request request
+            #(if-let [pr (get-in script [:pull-request-details
+                                         (str (repo-key request) "#" (:number request))])]
+               {:pull-request pr}
+               {:failure :not-found})))
+
+  (-branches [_ request]
+    (answer state script :branches request
+            #(if (get-in script [:repositories (repo-key request)])
+               {:branches (vec (for [[branch files] (sort (get-in @state [:branches (repo-key request)]))
+                                     :when (str/starts-with? branch (str (:prefix request)))]
+                                 {:name branch :sha (branch-sha files)}))}
+               {:failure :not-found})))
+
+  (-tree [_ request]
+    (answer state script :tree request
+            #(if-let [files (find-branch state request)]
+               {:entries (vec (for [[path content] (sort files)]
+                                {:path path :sha (sha1 content)}))}
+               {:failure :not-found})))
+
+  (-blob [_ request]
+    (answer state script :blob request
+            #(if-let [content (some (fn [[_ branches]]
+                                      (some (fn [[_ files]]
+                                              (some (fn [[_ c]] (when (= (:sha request) (sha1 c)) c))
+                                                    files))
+                                            branches))
+                                    (:branches @state))]
+               {:content content}
+               {:failure :not-found})))
+
+  (-delete-branch [_ request]
+    (answer state script :delete-branch request
+            #(if-let [failure (:delete-failure script)]
+               {:failure failure}
+               (do (swap! state update-in [:branches (repo-key request)] dissoc (:branch request))
+                   {:deleted true})))))
 
 (defn client [script]
-  (->MockGithub script (atom {:calls [] :budget-index -1})))
+  (->MockGithub script (atom {:calls [] :budget-index -1
+                              :branches (or (:branches script) {})})))
+
+(defn write-branch!
+  "Adds or replaces files on a branch of a mock repository, creating it if
+  needed."
+  [c repository branch files]
+  (swap! (:state c) update-in [:branches (repo-key repository) branch] merge files)
+  c)
+
+(defn branch-files
+  "What a branch of a mock repository holds, or nil."
+  [c repository branch]
+  (get-in @(:state c) [:branches (repo-key repository) branch]))
 
 (defn calls [c]
   (when (instance? MockGithub c) (:calls @(:state c))))

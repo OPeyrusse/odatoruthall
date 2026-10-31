@@ -9,6 +9,7 @@
   (:require [hiccup2.core :as h]
             [odato.access.interface :as access]
             [odato.time.interface :as t]
+            [odato.ui.owldesk :as owldesk]
             [odato.ui.parts :as parts]))
 
 (defn- badge [{:keys [service status login]}]
@@ -111,7 +112,7 @@
 (defn page
   "One page of the installation: the navigation, the badges, and the content.
 
-  The two applications hang off this shell, and the badges say what each can
+  The three applications hang off this shell, and the badges say what each can
   reach — which is why they are here and not inside either dashboard."
   [sys {:keys [title section]} content]
   [:html {:lang "en" :class "h-full"}
@@ -131,6 +132,7 @@
        [:nav {:class "flex items-center gap-1"}
         (nav-link {:href "/gitdesk" :label "gitdesk" :current? (= section :gitdesk)})
         (nav-link {:href "/worklog" :label "worklog" :current? (= section :worklog)})
+        (nav-link {:href "/owldesk" :label "owldesk" :current? (= section :owldesk)})
         (nav-link {:href "/settings" :label "settings" :current? (= section :settings)})]]
       [:div {:class "flex flex-wrap items-center gap-2"}
        (badge {:service :github
@@ -140,6 +142,10 @@
                :status (:connection/status (access/connection sys :jira))
                :login (:connection/account-login (access/connection sys :jira))})
        (budget-badge sys)
+       (let [[tone label] (owldesk/badge-status sys)]
+         [:a {:href "/settings#owldesk-settings" :class parts/badge-shell
+              :title "Whether a review can be launched"}
+          (parts/dot tone) label])
        (theme-switch)]]
      [:main {:class "flex flex-1 flex-col gap-4"} content]
      [:footer {:class (str "pt-2 " parts/faint)}

@@ -1,0 +1,177 @@
+-- allium: 3
+--
+-- owldesk — what the operator sees of the reviews: every review asked for,
+-- grouped by pull request; one review in full, while it runs and once it is
+-- done; and the review settings, with the cleanup of old results.
+
+use "../shared/access.allium" as access
+use "../shared/config.allium" as settings
+use "./review.allium" as review
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface Reviews {
+    -- Every review the installation knows of, and the way to ask for one.
+    facing operator: access/Operator
+
+    let reviews = review/Reviews
+    let recent = review/ReviewLaunches where fired_at + 1.hours > now
+
+    exposes:
+        operator.account_login
+        review/review_settings.results_repository
+        review/results_access.status
+        recent.count
+        for each in by_pull_request(reviews):
+            each.pull_request
+            each.run_id
+            each.launch.pull_request_title
+            each.launch.fired_at
+            each.launch.status
+            each.launch.refusal
+            each.launch.session_url
+            each.run.progress
+            each.run.updated_at
+            each.run.failure
+            each.run.has_summary
+            each.is_starting
+            each.is_running
+            each.is_stalled
+            each.is_done
+            each.is_failed
+            each.never_started
+
+    provides:
+        OperatorRequestsReview(String, String?)
+
+    related:
+        ReviewPage(reviews)
+        ReviewSettingsPanel
+
+    @guarantee GroupedByPullRequest
+        -- Reviews are listed by repository, then by pull request, the most
+        -- recent review first; each pull request says how many reviews it
+        -- had and what the latest found.
+
+    @guarantee WhatPreventsALaunchIsSaid
+        -- When a review cannot be asked for -- no results repository, one not
+        -- ready, no launcher, no GitHub credential -- the form says so before
+        -- the operator types anything, and a refused review says why.
+
+    @guarantee TheListFollowsTheRuns
+        -- While a review is in flight the list updates itself as the branch
+        -- moves, without being reloaded.
+}
+
+surface ReviewPage {
+    -- One review in full: where it stands, then its summary and one view per
+    -- review agent.
+    facing operator: access/Operator
+
+    context subject: review/Review
+
+    let others = review/Reviews where pull_request = subject.pull_request
+    let judged = review/FindingFeedbacks where run_id = subject.run_id
+
+    exposes:
+        operator.account_login
+        subject.run_id
+        subject.pull_request
+        subject.launch.session_url
+        subject.launch.brain_ref
+        subject.run.branch
+        subject.run.progress
+        subject.run.updated_at
+        subject.run.failure
+        subject.run.has_summary
+        subject.is_starting
+        subject.is_running
+        subject.is_stalled
+        subject.is_done
+        subject.is_failed
+        subject.never_started
+        others.count
+        for each in judged:
+            each.fingerprint
+            each.verdict
+
+    provides:
+        for fingerprint in findings_of(subject):
+            OperatorJudgesFinding(subject, fingerprint, review/FindingVerdict)
+            OperatorWithdrawsJudgement(subject, fingerprint)
+        OperatorRemovesReview(subject)
+
+    related:
+        ReviewPage(others)
+
+    @guarantee ProgressWhileRunning
+        -- While the review runs, the page shows each agent's state, the last
+        -- heartbeat and how long the run has taken; the files of the agents
+        -- already done can be read before the summary exists, marked as not
+        -- yet checked against each other.
+
+    @guarantee SummaryThenAgents
+        -- Once the summary exists, the page opens on it: the verdict, the
+        -- counts per severity, the intent check, the deduplicated findings,
+        -- the impact, the uncovered edge cases and the limitations. Each
+        -- agent has its own view: its model, how long it took, and every
+        -- finding it made -- kept, merged into another, dropped by the
+        -- synthesis or rejected by the checks, with the reason.
+
+    @guarantee EachFindingCanBeJudged
+        -- Every finding of the summary can be marked relevant or a false
+        -- positive, and the mark can be withdrawn. The mark is kept here,
+        -- not on the branch, and survives the branch's deletion.
+
+    @guarantee FailuresAreExplained
+        -- A failed run says the code and message it recorded; a stalled run
+        -- says how long its branch has been silent; a review that never
+        -- started says why when the launcher said, and leads to the session
+        -- when there is one.
+}
+
+surface ReviewSettingsPanel {
+    -- The review settings, the state of the results repository, and the
+    -- cleanup of old results. Shown with the other settings, saved apart.
+    facing operator: access/Operator
+
+    let candidates = review/Reviews where cleanup_candidate(this, review/review_settings)
+
+    exposes:
+        operator.account_login
+        review/review_settings.results_repository
+        review/review_settings.brain_ref
+        review/review_settings.launcher
+        review/review_settings.keep_runs_per_pull_request
+        review/review_settings.closed_pull_request_retention
+        review/review_settings.failed_run_retention
+        review/review_settings.updated_at
+        review/results_access.status
+        review/results_access.checked_at
+        candidates.count
+        for each in candidates:
+            each.pull_request
+            each.run_id
+
+    provides:
+        OperatorSavesReviewSettings(
+            review/review_settings.results_repository,
+            review/review_settings.brain_ref,
+            review/review_settings.launcher,
+            review/review_settings.keep_runs_per_pull_request,
+            review/review_settings.closed_pull_request_retention,
+            review/review_settings.failed_run_retention)
+        OperatorRequestsResultsCheck()
+        OperatorConfirmsCleanup()
+
+    @guarantee CredentialsAreNeverSettings
+        -- The launcher's own credentials, and the credential that may delete
+        -- branches, come with the process, like the GitHub and Jira ones.
+        -- The panel says whether each is there, never what it is.
+
+    @guarantee CleanupIsPreviewed
+        -- The branches a cleanup would delete are listed before the operator
+        -- confirms, and nothing is deleted on a schedule.
+}

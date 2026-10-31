@@ -498,9 +498,15 @@
           [:span (list "merged " (parts/relative-time now-ms (:merged-at facts)))])
         [:span (list "last collected "
                      (parts/relative-time now-ms (:last-seen-at pull-request)))]]
-       [:a {:href (:url facts) :class (str parts/primary-button " w-fit")
-            :target "_blank" :rel "noreferrer"}
-        "Open on GitHub"]]]
+       [:div {:class "flex flex-wrap gap-2"}
+        [:a {:href (:url facts) :class (str parts/primary-button " w-fit")
+             :target "_blank" :rel "noreferrer"}
+         "Open on GitHub"]
+        ;; A plain post: the answer is the owldesk page, saying whether the
+        ;; review was asked for.
+        [:form {:method "post" :action "/owldesk/launch"}
+         [:input {:type "hidden" :name "url" :value (:url facts)}]
+         [:button {:type "submit" :class parts/button} "Review with Owllie"]]]]]
      [:div {:class "grid gap-4 md:grid-cols-2"}
       (people-card pull-request facts)
       (state-card pull-request facts)]]))

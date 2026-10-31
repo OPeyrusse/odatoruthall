@@ -17,6 +17,8 @@
             [odato.events.interface :as events]
             [odato.github.interface :as github]
             [odato.jira.interface :as jira]
+            [odato.owllie.interface :as owllie]
+            [odato.review.interface :as review]
             [odato.time.interface :as t]
             [odato.turso.interface :as turso])
   (:import (java.util.concurrent Executors TimeUnit)))
@@ -45,7 +47,12 @@
             :base-url (env "GITHUB_API_URL" "https://api.github.com")}
    :jira {:base-url (env "JIRA_BASE_URL")
           :email (env "JIRA_EMAIL")
-          :token (env "JIRA_TOKEN")}})
+          :token (env "JIRA_TOKEN")}
+   :owllie {:fire-url (env "OWLLIE_FIRE_URL")
+            :fire-token (env "OWLLIE_FIRE_TOKEN")
+            :cli-dir (env "OWLLIE_CLI_DIR")
+            :claude-command (env "OWLLIE_CLAUDE_COMMAND" "claude")
+            :results-token (env "OWLLIE_RESULTS_TOKEN")}})
 
 (defn- store
   "Where the durable half lives, in the order the operator asked for.
@@ -68,12 +75,37 @@
                   "Set TURSO_URL and TURSO_TOKEN, or ODATO_DB_FILE.")
         (db/open {}))))
 
+(defn- review-clients
+  "The launchers that can start an Owllie session, and the client that may
+  delete results branches: each is there only when its credential is."
+  [settings]
+  (let [{:keys [fire-url fire-token cli-dir claude-command results-token]} (:owllie settings)]
+    {:launchers {:scheduled-task (when (and fire-url fire-token)
+                                   (owllie/scheduled-task {:fire-url fire-url :token fire-token}))
+                 :claude-cli (when cli-dir
+                               (owllie/claude-cli {:dir cli-dir
+                                                   :command (str/split claude-command #"\s+")}))}
+     :results-writer (when results-token
+                       (github/client {:token results-token
+                                       :base-url (:base-url (:github settings))}))}))
+
 (defn- clients [settings now-ms]
   (if (:demo settings)
-    {:github (github/mock-client (demo/github-script now-ms))
-     :jira (jira/mock-client (demo/jira-script now-ms))}
-    {:github (github/client (:github settings))
-     :jira (jira/client (:jira settings))}))
+    (let [gh (github/mock-client (merge (demo/github-script now-ms)
+                                        (demo/review-github-script now-ms)))
+          simulated (owllie/mock-launcher
+                     (demo/simulated-review
+                      {:write! (fn [branch files]
+                                 (github/mock-write-branch! gh demo/results-repository branch files))
+                       :now-fn #(System/currentTimeMillis)
+                       :step-ms 4000}))]
+      {:github gh
+       :jira (jira/mock-client (demo/jira-script now-ms))
+       :launchers {:scheduled-task simulated :claude-cli simulated}
+       :results-writer gh})
+    (merge {:github (github/client (:github settings))
+            :jira (jira/client (:jira settings))}
+           (review-clients settings))))
 
 (defn- present-credentials!
   "A credential that was never offered stays absent, and the badge says so
@@ -87,7 +119,11 @@
 
 (defn- seed-demo-configuration! [sys]
   (when-not (config/collectable? sys)
-    (config/save! sys (merge (config/current sys) demo/configuration))))
+    (config/save! sys (merge (config/current sys) demo/configuration)))
+  (when-not (:results-repository (review/settings sys))
+    (review/save-settings! sys (merge (review/settings sys)
+                                      {:results-repository (str (:owner demo/results-repository) "/"
+                                                                (:name demo/results-repository))}))))
 
 (defn create
   "Builds the installation without starting anything that ticks."
@@ -104,6 +140,7 @@
                     (clients settings now))]
      (access/ensure-defaults! sys)
      (config/ensure-defaults! sys)
+     (review/ensure-defaults! sys)
      sys)))
 
 (defn start!
@@ -130,6 +167,28 @@
                                            (catch Throwable e
                                              (log/warn e "the scheduler tick failed"))))
                           60 60 TimeUnit/SECONDS)
+    ;; The results branches of the reviews are read on their own pace —
+    ;; every minute while a review is in flight, every ten otherwise — and
+    ;; the results repository is checked once its credential is good.
+    (events/subscribe! (:bus sys) ::check-results-when-access-arrives
+                       (fn [{:keys [type service]}]
+                         (when (and (= :connection/established type) (= :github service))
+                           (.submit ^java.util.concurrent.ExecutorService (:executor sys)
+                                    ^Runnable (fn []
+                                                (try (review/check-results-repository! sys)
+                                                     (catch Throwable e
+                                                       (log/warn e "the results repository could not be checked"))))))))
+    (when (access/usable? sys :github)
+      (.submit ^java.util.concurrent.ExecutorService (:executor sys)
+               ^Runnable (fn [] (try (review/check-results-repository! sys)
+                                     (catch Throwable e
+                                       (log/warn e "the results repository could not be checked"))))))
+    (.scheduleAtFixedRate ^java.util.concurrent.ScheduledExecutorService (:scheduler sys)
+                          ^Runnable (fn []
+                                      (try (review/tick! sys)
+                                           (catch Throwable e
+                                             (log/warn e "the review tick failed"))))
+                          5 15 TimeUnit/SECONDS)
     ;; A storage keeps every node it has ever been handed until somebody says
     ;; otherwise: the tree is rewritten as it grows, and the old nodes are
     ;; still there. Once a day is plenty for one operator's worklog, and a file

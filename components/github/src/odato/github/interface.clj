@@ -57,6 +57,57 @@
   [c request]
   (protocol/-fetch-activity c request))
 
+;; ------------------------------------------------------------ repositories
+
+(defn repository
+  "`{:owner :name}` → `{:repository {:default-branch :private}}`, or
+  `{:failure :not-found|...}`."
+  [c request]
+  (protocol/-repository c request))
+
+(defn file-exists
+  "`{:owner :name :path :ref}` (no `:ref`: the default branch) →
+  `{:exists boolean}` or a failure."
+  [c request]
+  (protocol/-file-exists c request))
+
+(defn pull-request
+  "`{:owner :name :number}` → `{:pull-request {:title :author :state :closed-at
+  :head-sha :url}}`, `:state` being `:open`, `:closed` or `:merged`."
+  [c request]
+  (protocol/-pull-request c request))
+
+(defn branches
+  "`{:owner :name :prefix}` → `{:branches [{:name :sha}]}`: every branch whose
+  name starts with the prefix, with the commit it points at."
+  [c request]
+  (protocol/-branches c request))
+
+(defn tree
+  "`{:owner :name :sha}` → `{:entries [{:path :sha}]}`: every file of that
+  commit, with its blob."
+  [c request]
+  (protocol/-tree c request))
+
+(defn blob
+  "`{:owner :name :sha}` → `{:content string}`."
+  [c request]
+  (protocol/-blob c request))
+
+(defn delete-branch
+  "`{:owner :name :branch}` → `{:deleted true}` or a failure. A branch already
+  gone counts as deleted."
+  [c request]
+  (protocol/-delete-branch c request))
+
+(defn mock-write-branch!
+  "Moves a branch of a mock client, as a running review does."
+  [c repository branch files]
+  (mock/write-branch! c repository branch files))
+
+(defn mock-branch-files [c repository branch]
+  (mock/branch-files c repository branch))
+
 (defn calls
   "What a mock client was asked, in order. Nothing for a real one."
   [c]

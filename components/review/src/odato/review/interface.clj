@@ -1,0 +1,163 @@
+(ns odato.review.interface
+  "Automated reviews run by Owllie in a Claude cloud session, followed from
+  here (specs/owldesk).
+
+  The installation asks a launcher to start a session and hands it a request
+  naming the pull request, the results repository and the branch. From then
+  on it reads everything back from that branch. It keeps only the launch —
+  asked for when, what the launcher answered — and what the operator thinks of
+  the findings; both outlive the process. What the branches hold is read again
+  after a restart.
+
+  The system map carries, besides the store, the clock and the bus:
+
+    :github          the GitHub client, with the operator's read credential
+    :results-writer  a GitHub client that may delete branches of the results
+                     repository, or nil
+    :launchers       {:scheduled-task <launcher|nil> :claude-cli <launcher|nil>}
+    :executor        where launches and readings run (inline without one)"
+  (:require [odato.review.core :as core]
+            [odato.review.results :as results]
+            [odato.review.settings :as settings]))
+
+(def timing core/timing)
+(def agents core/agents)
+(def severities core/severities)
+(def launchers settings/launchers)
+
+(defn ensure-defaults! [sys] (results/ensure-defaults! sys))
+
+;; ----------------------------------------------------------------- settings
+
+(def settings-defaults settings/defaults)
+(def settings-bounds settings/bounds)
+
+(defn settings
+  "`{:results-repository {:owner :name}|nil :brain-ref :launcher :keep-runs
+  :closed-retention-ms :failed-retention-ms :updated-at}`."
+  [sys]
+  (settings/current sys))
+
+(defn save-settings!
+  "ReviewSettingsSaved: `{:ok true :settings ...}` or `{:ok false :fault ...}`.
+  The proposal holds the repository and the brain ref as typed."
+  [sys proposal]
+  (settings/save! sys proposal))
+
+(defn results-access
+  "`:unchecked`, `:ready`, `:unreadable` or `:unmarked`."
+  [sys]
+  (settings/access-status sys))
+
+(defn results-access-checked-at [sys] (settings/access-checked-at sys))
+
+(defn check-results-repository!
+  "Reads the results repository and looks for its marker. Answers the status."
+  [sys]
+  (settings/check-results-repository! sys))
+
+(def marker settings/marker)
+
+;; ---------------------------------------------------------------- launching
+
+(defn launcher-available?
+  "Whether `:scheduled-task` or `:claude-cli` is configured."
+  [sys kind]
+  (core/launcher-available? sys kind))
+
+(defn fires-in-last-hour [sys] (core/fires-in-last-hour sys))
+
+(defn launch!
+  "OperatorRequestsReview `{:url :brain-ref}`: `{:ok true :run-id ...}` or
+  `{:ok false :refusal ...}`."
+  [sys request]
+  (core/launch! sys request))
+
+;; ------------------------------------------------------------------ reviews
+
+(defn reviews
+  "Every review, most recently asked for first. Each is `{:run-id
+  :pull-request :title :state :asked-at :launch {...}|nil :run {...}|nil}`;
+  `:state` is `:starting`, `:running`, `:stalled`, `:done`, `:failed`,
+  `:never-started` or `:unreadable`."
+  [sys]
+  (core/reviews sys))
+
+(defn review [sys run-id] (core/review sys run-id))
+
+(defn by-pull-request
+  "`[{:pull-request ... :reviews [...]}]`, by repository then pull request."
+  [sys]
+  (core/by-pull-request sys))
+
+(defn active? [review] (core/active? review))
+
+(defn pull-request-key [pull-request] (core/pull-request-key pull-request))
+
+(defn tick!
+  "Called every so often by the scheduler: reads the results branches when
+  they are due."
+  [sys]
+  (core/tick! sys))
+
+(defn read-soon! [sys] (core/read-soon! sys))
+
+(defn last-read
+  "`{:at <ms|nil> :failure <kw|nil>}`: when the branches were last read, and
+  why the last attempt failed if it did."
+  [sys]
+  (let [p (results/polling sys)]
+    {:at (:results-polling/read-at p) :failure (:results-polling/failure p)}))
+
+(defn read-results!
+  "Reads the results branches now, on this thread."
+  [sys]
+  (results/read! sys))
+
+;; ----------------------------------------------------------------- findings
+
+(defn findings
+  "A review's findings by fingerprint: the summary's, then the agents' kept
+  and merged ones."
+  [review]
+  (core/findings review))
+
+(defn judgements [sys run-id] (core/judgements sys run-id))
+
+(defn feedback
+  "Every judgement kept, with its copy of the finding."
+  [sys]
+  (core/feedback sys))
+
+(defn judge!
+  "Marks a finding `:relevant` or `:false-positive`."
+  [sys run-id fingerprint verdict]
+  (core/judge! sys run-id fingerprint verdict))
+
+(defn withdraw-judgement! [sys run-id fingerprint]
+  (core/withdraw-judgement! sys run-id fingerprint))
+
+;; ------------------------------------------------------------------ cleanup
+
+(defn writer-available?
+  "Whether branches of the results repository can be deleted."
+  [sys]
+  (core/writer-available? sys))
+
+(defn refresh-pull-request-states! [sys] (core/refresh-pull-request-states! sys))
+
+(defn cleanup-candidates
+  "`[{:review ... :reasons #{...}}]`, reasons among `:beyond-kept`,
+  `:pull-request-closed` and `:failed-long-ago`."
+  [sys]
+  (core/cleanup-candidates sys))
+
+(defn remove!
+  "Removes one review: `{:ok true}` or `{:ok false :fault ...}`."
+  [sys run-id]
+  (core/remove! sys run-id))
+
+(defn clean-up!
+  "Removes every candidate: `{:removed n :failed [...]}`."
+  [sys]
+  (core/clean-up! sys))

@@ -2,7 +2,7 @@
 
 One dashboard to rule them all.
 
-Two applications, one server, one operator:
+Three applications, one server, one operator:
 
 - **gitdesk** — an in-flight pull request dashboard for a chosen set of GitHub
   repositories and a chosen set of team members, with counts and
@@ -11,6 +11,12 @@ Two applications, one server, one operator:
 - **worklog** — the operator's own work: a sliding window of the last five
   working days, the tasks worked on each of them, the lines that led to each
   task, and the time logged against it through the Jira worklog API.
+- **owldesk** — automated code reviews of pull requests, run by
+  [Owllie](https://github.com/OPeyrusse/owllie) in a Claude cloud session:
+  paste a pull request link, follow the run while it goes, then read its
+  summary and each review agent's findings, and mark them relevant or false
+  positives. Each run writes to its own branch of a results repository; the
+  installation reads it back from there.
 
 `specs/` is the primary artefact. The `.allium` files say what the installation
 does, in domain terms; this code implements them. Read the spec before changing
@@ -35,6 +41,11 @@ leaves a badge saying so instead of breaking a dashboard.
 | `TURSO_TOKEN` | The Turso database token. | unset |
 | `TURSO_TABLE` | The table the store keeps its nodes in. | `odatoruthall` |
 | `ODATO_DB_FILE` | Where the worklog is kept when Turso is not configured. Unset too, and the whole installation is in memory: the configuration and the worklog go with the process. | unset |
+| `OWLLIE_FIRE_URL` | owldesk: the Fire URL of the Claude scheduled task running Owllie (its API trigger). | unset |
+| `OWLLIE_FIRE_TOKEN` | owldesk: the token of that API trigger. | unset |
+| `OWLLIE_CLI_DIR` | owldesk, instead of the scheduled task: a clone of Owllie from which `claude --cloud` starts the session. The Claude CLI must be installed and signed in (`claude auth login`). | unset |
+| `OWLLIE_CLAUDE_COMMAND` | The command that runs the Claude CLI. | `claude` |
+| `OWLLIE_RESULTS_TOKEN` | owldesk: a fine-grained token with *Contents* write on the results repository only, to delete old results branches. Without it, cleanup is off and `GITHUB_TOKEN` stays read-only. | unset |
 | `ODATO_DEMO` | `1` runs against scripted data: no credential is used and no request leaves the process. | `false` |
 | `PORT` | The port the server listens on. | `7777` |
 
@@ -61,6 +72,26 @@ $EDITOR .env
 `./scripts/run.sh` and `docker compose` both read that file. Nothing else does:
 plain `clojure -M:dev:run` and plain `docker run` read the environment they are
 given, so with those you export the variables yourself.
+
+## owldesk
+
+Setting up the Owllie side — the results repository with its
+`.owllie-results` marker, the scheduled task and its API trigger — is
+described in Owllie's README. Here:
+
+1. Give the launcher to the process: `OWLLIE_FIRE_URL` and `OWLLIE_FIRE_TOKEN`
+   (or `OWLLIE_CLI_DIR`). `GITHUB_TOKEN` must be able to read the results
+   repository.
+2. In **settings › Owllie reviews**, set the results repository (e.g.
+   `activeviam/owllie-results`) and save: it is checked at once, and the
+   badge in the header turns to *owllie ready*.
+3. Paste a pull request link in **owldesk**, or use *Review with Owllie* on a
+   pull request in gitdesk.
+
+The results branches are read every minute while a review is in flight and
+every ten minutes otherwise; a quiet results repository costs one GitHub
+request per reading. What you mark on findings is kept in the installation's
+store, and survives the branches being cleaned up.
 
 ## Running it
 
@@ -196,7 +227,9 @@ Polylith, laid out one component per specification slice. It is plain
 | `components/work-item` | a key becomes a Jira issue, or is reported as one Jira refused | `worklog/work-item` |
 | `components/worklog` | days, entries, and what it means for time to reach Jira | `worklog/worklog` |
 | `components/discovery` | the day scan, attribution, and the orphans it keeps | `worklog/discovery` |
-| `components/ui` | every page and fragment | `gitdesk/dashboard`, `worklog/timesheet`, `shared/shell` |
+| `components/owllie` | Owllie seen from here: the request format, branch names, and the launchers (scheduled task, CLI, mock) | — |
+| `components/review` | review settings, launches, reading results branches, judgements of findings, cleanup | `owldesk/review` |
+| `components/ui` | every page and fragment | `gitdesk/dashboard`, `worklog/timesheet`, `owldesk/owldesk`, `shared/shell` |
 | `bases/server` | the routes, the event stream, the process | — |
 | `projects/server` | the one deployable artefact | — |
 

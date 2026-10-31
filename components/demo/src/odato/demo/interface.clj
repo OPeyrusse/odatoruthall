@@ -7,7 +7,8 @@
   data below is scripted so that every classification the specification names
   has something under it — a stuck pull request, an aging one, a merge train,
   a day with lines that group under a ticket and one loose end."
-  (:require [odato.demo.data :as data]))
+  (:require [odato.demo.data :as data]
+            [odato.demo.reviews :as reviews]))
 
 (defn github-script
   "What the mock GitHub answers, relative to `now-ms`."
@@ -22,3 +23,21 @@
 (def configuration
   "What a demo installation watches."
   data/configuration)
+
+;; ------------------------------------------------------------------ reviews
+
+(def results-repository
+  "The results repository a demo installation reviews towards."
+  reviews/results-repository)
+
+(defn review-github-script
+  "What the mock GitHub answers for owldesk: the results repository, its
+  branches, the pull requests reviewed."
+  [now-ms]
+  (reviews/github-script now-ms))
+
+(defn simulated-review
+  "A launcher's `on-fire` writing a run's branch step by step:
+  `{:write! (fn [branch files]) :now-fn (fn []) :step-ms n}`."
+  [opts]
+  (reviews/simulate opts))

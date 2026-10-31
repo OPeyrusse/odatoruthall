@@ -4,12 +4,13 @@
   The interface is server-rendered HTML made dynamic with Datastar: the server
   already owns the snapshot and the worklog, so it renders them and pushes the
   changes. Each dashboard has one fragment — `#gitdesk`, `#gitdesk-my-work`,
-  `#gitdesk-member`, `#worklog`, `#worklog-day` — which a collection cycle or a day scan patches in place as
+  `#gitdesk-member`, `#worklog`, `#worklog-day`, `#owldesk`, `#owldesk-review` — which a collection cycle or a day scan patches in place as
   its sources land."
   (:require [hiccup2.core :as h]
             [odato.time.interface :as t]
             [odato.ui.gitdesk :as gitdesk]
             [odato.ui.layout :as layout]
+            [odato.ui.owldesk :as owldesk]
             [odato.ui.settings :as settings]
             [odato.ui.worklog :as worklog]))
 
@@ -70,9 +71,32 @@
 
 (defn settings-page
   ([sys] (settings-page sys nil))
-  ([sys outcome]
+  ([sys outcome] (settings-page sys outcome nil))
+  ([sys outcome review-outcome]
    (document (layout/page sys {:title "settings" :section :settings}
-                          (settings/body sys {:outcome outcome})))))
+                          [:div {:class "flex flex-col gap-4"}
+                           (settings/body sys {:outcome outcome})
+                           (owldesk/settings-section sys {:outcome review-outcome})]))))
+
+(defn owldesk-page
+  ([sys] (owldesk-page sys nil))
+  ([sys outcome]
+   (document (layout/page sys {:title "owldesk" :section :owldesk}
+                          [:div {:data-on-load "@get('/sse/owldesk')" :class "flex flex-col gap-4"}
+                           (owldesk/launch-outcome outcome)
+                           (owldesk/body sys {:outcome outcome})]))))
+
+(defn review-page [sys review agent]
+  (document (layout/page sys {:title (str "review " (:run-id review)) :section :owldesk}
+                         [:div {:data-on-load (str "@get('/sse/owldesk/review/" (:run-id review)
+                                                   (when agent (str "/" agent)) "')")}
+                          (owldesk/review-page sys review {:agent agent})])))
+
+(defn cleanup-page
+  ([sys] (cleanup-page sys nil))
+  ([sys outcome]
+   (document (layout/page sys {:title "cleanup" :section :settings}
+                          (owldesk/cleanup-page sys {:outcome outcome})))))
 
 (def ^:private not-found-class
   (str "rounded-xl border border-slate-200 bg-white px-4 py-10 text-center "
@@ -89,6 +113,11 @@
 (defn member-fragment [sys member] (render (gitdesk/member-page sys member)))
 (defn worklog-fragment [sys] (render (worklog/body sys)))
 (defn day-fragment [sys day] (render (worklog/day-page sys day)))
+(defn owldesk-fragment [sys] (render (owldesk/body sys {})))
+(defn launch-outcome-fragment [outcome] (render (owldesk/launch-outcome outcome)))
+(defn review-fragment [sys review agent] (render (owldesk/review-page sys review {:agent agent})))
+(defn review-settings-fragment [sys outcome]
+  (render (owldesk/settings-section sys {:outcome outcome})))
 
 ;; ------------------------------------------------------------------- reading
 
@@ -96,3 +125,8 @@
   "Form parameters as a proposal the configuration component can judge."
   [params]
   (settings/read-proposal params))
+
+(defn review-settings-proposal
+  "Form parameters as a proposal the review settings can judge."
+  [params]
+  (owldesk/read-settings-proposal params))

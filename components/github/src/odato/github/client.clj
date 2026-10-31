@@ -251,6 +251,99 @@ query($q: String!, $cursor: String) {
          :next-cursor (http/link-cursor response)
          :budget budget}))))
 
+;; ------------------------------------------------------------ repositories
+
+(defn- repo-path [{:keys [owner name]}]
+  (str "/repos/" owner "/" name))
+
+(defn- rest-call
+  "One REST call, answered as `(f body)` merged with the budget, or as a
+  failure. A 404 is `:not-found`: for owldesk, a repository, a pull request or
+  a file that is not there is an answer, not an error."
+  [c request f]
+  (let [response (http/request (:api c) request)
+        budget (rest-budget response)]
+    (cond
+      (exhausted? response budget) {:retry true :budget budget}
+      (= 404 (:status response)) {:failure :not-found :budget budget}
+      (not (http/ok? response)) {:failure (failure-of response) :budget budget}
+      :else (merge (f (:body response) response) {:budget budget}))))
+
+(defn- pull-request-state [body]
+  (cond
+    (:merged_at body) :merged
+    (= "closed" (:state body)) :closed
+    :else :open))
+
+(defn- decode-base64 [s]
+  (String. (.decode (java.util.Base64/getMimeDecoder) (str s)) "UTF-8"))
+
+(defn- repository [c request]
+  (rest-call c {:method :get :path (repo-path request)}
+             (fn [body _]
+               {:repository {:default-branch (:default_branch body)
+                             :private (boolean (:private body))}})))
+
+(defn- file-exists [c {:keys [ref path] :as request}]
+  (let [answer (rest-call c {:method :get
+                             :path (str (repo-path request) "/contents/" path)
+                             :query (when ref {:ref ref})}
+                          (fn [_ _] {:exists true}))]
+    (if (= :not-found (:failure answer))
+      {:exists false :budget (:budget answer)}
+      answer)))
+
+(defn- pull-request [c {:keys [number] :as request}]
+  (rest-call c {:method :get :path (str (repo-path request) "/pulls/" number)}
+             (fn [body _]
+               {:pull-request {:title (:title body)
+                               :author (get-in body [:user :login])
+                               :state (pull-request-state body)
+                               :closed-at (t/parse-instant (:closed_at body))
+                               :head-sha (get-in body [:head :sha])
+                               :url (:html_url body)}})))
+
+(defn- branches [c {:keys [prefix] :as request}]
+  (let [response (http/request (:api c)
+                               {:method :get
+                                :path (str (repo-path request) "/git/matching-refs/heads/" prefix)})
+        budget (rest-budget response)]
+    (cond
+      (exhausted? response budget) {:retry true :budget budget}
+      ;; A repository with no commit at all has no refs to match.
+      (= 409 (:status response)) {:branches [] :budget budget}
+      (= 404 (:status response)) {:failure :not-found :budget budget}
+      (not (http/ok? response)) {:failure (failure-of response) :budget budget}
+      :else {:branches (vec (for [ref (:body response)
+                                  :let [n (str (:ref ref))]
+                                  :when (str/starts-with? n "refs/heads/")]
+                              {:name (subs n (count "refs/heads/"))
+                               :sha (get-in ref [:object :sha])}))
+             :budget budget})))
+
+(defn- tree [c {:keys [sha] :as request}]
+  (rest-call c {:method :get :path (str (repo-path request) "/git/trees/" sha)
+                :query {:recursive 1}}
+             (fn [body _]
+               {:entries (vec (for [e (:tree body) :when (= "blob" (:type e))]
+                                {:path (:path e) :sha (:sha e)}))})))
+
+(defn- blob [c {:keys [sha] :as request}]
+  (rest-call c {:method :get :path (str (repo-path request) "/git/blobs/" sha)}
+             (fn [body _]
+               {:content (if (= "base64" (:encoding body))
+                           (decode-base64 (:content body))
+                           (str (:content body)))})))
+
+(defn- delete-branch [c {:keys [branch] :as request}]
+  (let [answer (rest-call c {:method :delete
+                             :path (str (repo-path request) "/git/refs/heads/" branch)}
+                          (fn [_ _] {:deleted true}))]
+    ;; A branch already gone is as deleted as it will ever be.
+    (if (= :not-found (:failure answer))
+      {:deleted true :budget (:budget answer)}
+      answer)))
+
 ;; ------------------------------------------------------------------ client
 
 (defrecord GithubClient [api]
@@ -261,7 +354,16 @@ query($q: String!, $cursor: String) {
         {:login (get-in response [:body :login]) :budget (rest-budget response)}
         {:failure (failure-of response)})))
   (-fetch-pull-requests [this request] (pull-requests this request))
-  (-fetch-activity [this request] (activity this request)))
+  (-fetch-activity [this request] (activity this request))
+
+  protocol/GithubRepositories
+  (-repository [this request] (repository this request))
+  (-file-exists [this request] (file-exists this request))
+  (-pull-request [this request] (pull-request this request))
+  (-branches [this request] (branches this request))
+  (-tree [this request] (tree this request))
+  (-blob [this request] (blob this request))
+  (-delete-branch [this request] (delete-branch this request)))
 
 (defn client
   [{:keys [token base-url timeout-ms]
