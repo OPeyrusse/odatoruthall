@@ -257,9 +257,6 @@
        (drafts-toggle signal pull-requests)]]
      (pr-rows now-ms signal pull-requests empty-message)]))
 
-(def ^:private back-link
-  [:a {:href "/gitdesk" :class (str parts/muted " w-fit hover:underline")} "← gitdesk"])
-
 (def ^:private page-title "text-2xl font-semibold tracking-tight")
 
 (def ^:private arrow
@@ -301,7 +298,7 @@
         operator (access/operator-login sys)]
     [:div {:id "gitdesk-my-work" :class "flex flex-col gap-4"}
      (collection-card now-ms "draftsListed"
-                      (list back-link [:h1 {:class page-title} title])
+                      (list (parts/back-link "/gitdesk") [:h1 {:class page-title} title])
                       (get (my-work operator (collector/pull-requests sys)) group)
                       (if operator
                         empty
@@ -399,7 +396,7 @@
     [:div {:id "gitdesk-member" :class "flex flex-col gap-4"}
      [:section {:class parts/card}
       [:div {:class "flex flex-col gap-1 px-4 py-4"}
-       back-link
+       (parts/back-link "/gitdesk")
        [:h1 {:class page-title} (str "@" member)]]]
      (collection-card now-ms "draftsAuthored" [:h2 {:class page-title} "Authored"] authored
                       (str "Nothing by @" member " is in flight."))
@@ -483,7 +480,7 @@
      [:section {:class parts/card}
       [:div {:class "flex flex-col gap-2 px-4 py-4"}
        [:div {:class "flex flex-wrap items-center gap-2"}
-        [:a {:href "/gitdesk" :class (str parts/muted " hover:underline")} "← gitdesk"]
+        (parts/back-link "/gitdesk")
         [:span {:class parts/muted} (repository-label pull-request)]]
        [:h1 {:class "text-xl font-semibold"} (:title facts)]
        [:div {:class "flex flex-wrap items-center gap-1.5"}

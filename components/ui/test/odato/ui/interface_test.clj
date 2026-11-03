@@ -114,6 +114,19 @@
         (is (str/includes? body "Nothing is assigned to @ada."))))
     (is (nil? (ui/tracked-member sys "mallory")))))
 
+(deftest a-back-link-returns-to-the-page-it-was-reached-from
+  (let [sys (installation)]
+    (collector/collect! sys :manual)
+    (doseq [[what body fallback]
+            [["a group of my work" (ui/my-work-fragment sys (ui/my-work-group "authored"))
+              "/gitdesk"]
+             ["a pull request" (ui/pull-request-page sys (first (collector/pull-requests sys)))
+              "/gitdesk"]]]
+      (testing what
+        (is (str/includes? body "history.back()") "goes back in the history")
+        (is (str/includes? body (str "href=\"" fallback "\"")) "and leads somewhere without one")
+        (is (str/includes? body "← Back"))))))
+
 (deftest the-settings-form-reads-back-what-is-in-force
   (let [sys (installation)
         body (ui/settings-page sys)]

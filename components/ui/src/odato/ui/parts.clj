@@ -101,6 +101,21 @@
       [:span {:title (t/format-instant ms) :class "whitespace-nowrap"}
        (if (= "just now" said) said (str said " ago"))])))
 
+(def ^:private go-back
+  "Runs on click: when the operator came from a page of this application, the
+  link does what the browser's back button does, landing on that very page
+  (a section, a member, a review...) with its scroll. Otherwise the click
+  follows the href."
+  "if(document.referrer.startsWith(location.origin+'/')){history.back();return false}")
+
+(defn back-link
+  "A link back to the page the operator came from. `fallback` is where it leads
+  when there is no such page: the page was opened from a bookmark or a new tab,
+  or scripts are off."
+  [fallback]
+  [:a {:href fallback :onclick go-back :class (str muted " w-fit hover:underline")}
+   "← Back"])
+
 (defn humanise
   "`:credential-rejected` reads as `credential rejected`."
   [k]

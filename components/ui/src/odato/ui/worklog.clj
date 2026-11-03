@@ -296,7 +296,7 @@
      [:section {:class (str parts/card (when (:busy-with day) " busy-glow"))}
       [:div {:class "flex flex-wrap items-center justify-between gap-3 px-4 py-4"}
        [:div
-        [:a {:href "/worklog" :class (str parts/muted " hover:underline")} "← timesheet"]
+        (parts/back-link "/worklog")
         [:div {:class "flex flex-wrap items-center gap-2"}
          [:h1 {:class "text-xl font-semibold"} (t/day-label (:starts-at day))]
          (when scanning (scan-chip "scanning" scanning))

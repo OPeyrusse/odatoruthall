@@ -429,7 +429,7 @@
      [:section {:class parts/card}
       [:div {:class "flex flex-col gap-2 px-4 py-4"}
        [:div {:class "flex flex-wrap items-center gap-2"}
-        [:a {:href "/owldesk" :class (str parts/muted " hover:underline")} "← owldesk"]
+        (parts/back-link "/owldesk")
         [:a {:href (pr-url (:pull-request r)) :target "_blank" :rel "noreferrer"
              :class (str parts/muted " hover:underline")} (pr-label (:pull-request r))]]
        [:h1 {:class "text-xl font-semibold"} (or (:title r) (pr-label (:pull-request r)))]
@@ -568,7 +568,7 @@
   (let [candidates (review/cleanup-candidates sys)
         with-branch (count (filter #(get-in % [:review :run]) candidates))]
     [:div {:id "owldesk-cleanup" :class "flex flex-col gap-4"}
-     [:a {:href "/settings" :class (str parts/muted " hover:underline")} "← settings"]
+     (parts/back-link "/settings")
      (when outcome
        (if (empty? (:failed outcome))
          (notice :ok (str (plural (:removed outcome) "review") " removed."))
