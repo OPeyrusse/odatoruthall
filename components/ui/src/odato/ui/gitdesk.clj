@@ -76,7 +76,11 @@
     [:a {:href (pr-href pull-request)
          :class "font-medium text-slate-900 hover:underline dark:text-slate-100"}
      (get-in pull-request [:facts :title])]
-    [:span {:class parts/faint} (repository-label pull-request)]]
+    ;; Straight to GitHub; the title keeps leading to the detail page.
+    [:a {:href (get-in pull-request [:facts :url])
+         :class (str parts/faint " hover:underline")
+         :target "_blank" :rel "noreferrer"}
+     (repository-label pull-request)]]
    [:div {:class "flex flex-wrap items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400"}
     [:span (str "by " (get-in pull-request [:facts :author]))]
     [:span "·"]

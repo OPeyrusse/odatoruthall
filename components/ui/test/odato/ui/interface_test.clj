@@ -95,6 +95,14 @@
       (is (str/includes? body "Show 1 draft")))
     (is (nil? (ui/my-work-group "starred")))))
 
+(deftest a-listed-pull-request-links-to-its-page-and-to-github
+  (let [sys (installation)]
+    (collector/collect! sys :manual)
+    (let [body (ui/my-work-fragment sys (ui/my-work-group "authored"))]
+      (is (str/includes? body "href=\"/gitdesk/pull-request/acme/widget/1\""))
+      (is (re-find #"href=\"https://github.com/acme/widget/pull/1\"[^>]*>acme/widget #1</a>"
+                   body)))))
+
 (deftest the-team-chart-counts-what-each-member-has-in-flight
   (let [sys (installation)]
     (collector/collect! sys :manual)
