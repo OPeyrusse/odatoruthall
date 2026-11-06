@@ -13,8 +13,9 @@
 -- the text the operator typed, the total it adds up to, and whether Jira has
 -- it yet.
 --
--- A day reads as one row per task, in ticket order. Under a task sit the lines that led to it:
--- the pull requests, the reviews, the comments, the issues touched that day.
+-- A day reads as one row per task, in ticket order. Under a task sit the
+-- lines that led to it: the pull requests, the reviews, the comments, the
+-- issues touched that day.
 -- Several lines under one task is the normal case -- two pull requests on the
 -- same ticket are one ticket's day -- and there is still exactly one place to
 -- put the time: the task. The lines carry none of their own; they are what the
