@@ -123,11 +123,19 @@
            first
            ->entry))
 
+(defn- key-order
+  "Sorts a key by its project, then by its number as a number: PIVOT-2 comes
+  before PIVOT-10. A key without a number falls back to its text."
+  [k]
+  (if-let [[_ project number] (and k (re-matches #"(.*)-(\d+)" k))]
+    [project (parse-long number) k]
+    [(str k) Long/MAX_VALUE (str k)]))
+
 (defn entries-on [sys day-starts-at]
   (->> (entry-rows sys)
        (map ->entry)
        (filter #(= (long day-starts-at) (long (or (:day-starts-at %) -1))))
-       (sort-by :work-item-key)
+       (sort-by (comp key-order :work-item-key))
        vec))
 
 (defn day

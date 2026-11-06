@@ -10,7 +10,11 @@
   {:issues {"ABC-1" {:summary "Ship it" :status "In Progress"
                      :url "https://jira/ABC-1" :is-closed false}
             "ABC-2" {:summary "Fix it" :status "To Do"
-                     :url "https://jira/ABC-2" :is-closed false}}
+                     :url "https://jira/ABC-2" :is-closed false}
+            "ABC-10" {:summary "Test it" :status "To Do"
+                      :url "https://jira/ABC-10" :is-closed false}
+            "AB-30" {:summary "Plan it" :status "To Do"
+                     :url "https://jira/AB-30" :is-closed false}}
    :unknown #{"ABC-9"}})
 
 (def today (t/parse-day "2026-09-15"))
@@ -39,6 +43,13 @@
       (is (= :added-by-operator (:origin (first (:entries d)))))
       (is (= :drafted (:status (first (:entries d)))))
       (is (= 0 (:total-logged d)) "naming a task puts no time on it"))))
+
+(deftest a-day-lists-its-tasks-by-project-then-number
+  (let [sys (installation)]
+    (doseq [k ["ABC-10" "ABC-2" "AB-30" "ABC-1"]]
+      (worklog/name-task! sys today k))
+    (is (= ["AB-30" "ABC-1" "ABC-2" "ABC-10"]
+           (map :work-item-key (:entries (worklog/day sys today)))))))
 
 (deftest a-key-jira-does-not-know-puts-nothing-on-the-day
   (let [sys (installation)
