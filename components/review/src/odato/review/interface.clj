@@ -107,11 +107,14 @@
 (defn read-soon! [sys] (core/read-soon! sys))
 
 (defn last-read
-  "`{:at <ms|nil> :failure <kw|nil>}`: when the branches were last read, and
-  why the last attempt failed if it did."
+  "`{:at <ms|nil> :failure <kw|nil> :reading <bool>}`: when the branches were
+  last read, why the last attempt failed if it did, and whether a reading is
+  running now."
   [sys]
   (let [p (results/polling sys)]
-    {:at (:results-polling/read-at p) :failure (:results-polling/failure p)}))
+    {:at (:results-polling/read-at p)
+     :failure (:results-polling/failure p)
+     :reading (boolean (:results-polling/reading p))}))
 
 (defn read-results!
   "Reads the results branches now, on this thread."

@@ -188,13 +188,19 @@
   (let [groups (review/by-pull-request sys)
         by-repository (group-by #(config/repository-key (get-in % [:pull-request :repository]))
                                 groups)
-        {read-at :at polling-failure :failure} (review/last-read sys)]
-    [:section {:class parts/card}
+        {read-at :at polling-failure :failure reading :reading} (review/last-read sys)]
+    ;; While the branches are read, the card carries the same rainbow ring as
+    ;; a day being scanned in the worklog.
+    [:section {:class (str parts/card (when reading " busy-glow"))}
      [:div {:class parts/card-heading}
       [:h2 {:class parts/heading-text} "Reviews"]
-      [:form {:method "post" :action "/owldesk/refresh"
-              :data-on-submit "@post('/owldesk/refresh')"}
-       [:button {:class parts/button :type "submit"} "Read the branches now"]]]
+      [:div {:class "flex items-center gap-2"}
+       (when reading (parts/chip "reading the branches" :sky))
+       [:form {:method "post" :action "/owldesk/refresh"
+               :data-on-submit "@post('/owldesk/refresh')"}
+        [:button {:class parts/button :type "submit" :disabled reading
+                  :title (when reading "The branches are being read")}
+         "Read the branches now"]]]]
      (if (empty? groups)
        (parts/empty-state "No review yet. Paste a pull request link above.")
        (for [[repository gs] (sort-by key by-repository)]
