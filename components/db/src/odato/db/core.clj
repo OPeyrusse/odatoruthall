@@ -80,6 +80,7 @@
    :results-access/scope      {:db/unique :db.unique/identity}
    :results-polling/scope     {:db/unique :db.unique/identity}
    :review-run/id             {:db/unique :db.unique/identity}
+   :review-removed/run-id     {:db/unique :db.unique/identity}
    :review-pr/ident           {:db/unique :db.unique/identity}})
 
 ;; ------------------------------------------------------------- persistence

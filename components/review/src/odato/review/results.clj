@@ -130,6 +130,7 @@
       (not (try-lock! sys)) :already-reading
       :else
       (try
+        (events/publish! (:bus sys) {:type :review/reading})
         (let [listed (github/branches (:github sys) (assoc repository :prefix owllie/branch-prefix))]
           (settings/observe-budget! sys listed)
           (if (or (:failure listed) (:retry listed))
@@ -145,6 +146,20 @@
                                            (assoc parsed :branch (:name b) :sha (:sha b))))
                                  (:branches listed))
                   listed-ids (set (map :run-id branches))
+                  ;; A review removed here may still be listed for a moment
+                  ;; (a reading that began before the deletion, GitHub's own
+                  ;; lag): it must not come back. Once its branch is no longer
+                  ;; listed, the mark has done its work.
+                  removed (set (map :review-removed/run-id
+                                    (db/all (db/db (volatile sys)) :review-removed/run-id)))
+                  branches (remove (comp removed :run-id) branches)
+                  _ (when-let [done (seq (remove listed-ids removed))]
+                      (db/transact! (volatile sys)
+                                    (for [id done
+                                          :let [eid (db/lookup (db/db (volatile sys))
+                                                               :review-removed/run-id id)]
+                                          :when eid]
+                                      (db/retract-entity eid))))
                   gone (remove (comp listed-ids key) known)
                   changed (atom (boolean (seq gone)))]
               (doseq [branch branches
@@ -172,8 +187,11 @@
               (when @changed
                 (events/publish! (:bus sys) {:type :review/results-read}))
               :read)))
-        (finally (unlock! sys))))))
+        (finally
+          (unlock! sys)
+          (events/publish! (:bus sys) {:type :review/reading-ended}))))))
 
 (defn forget-run! [sys run-id]
+  (db/put! (volatile sys) :review-removed/run-id run-id {})
   (when-let [eid (db/lookup (db/db (volatile sys)) :review-run/id run-id)]
     (db/transact! (volatile sys) [(db/retract-entity eid)])))
