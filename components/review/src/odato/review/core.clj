@@ -427,6 +427,13 @@
            :when (seq reasons)]
        {:review r :reasons reasons}))))
 
+(defn- still-listed?
+  "Whether the results repository still lists `branch`. A listing that fails
+  answers no: the deletion said it went, and nothing says otherwise."
+  [sys repository branch]
+  (let [listed (github/branches (:github sys) (assoc repository :prefix branch))]
+    (boolean (some #(= branch (:name %)) (:branches listed)))))
+
 (defn remove!
   "OperatorRemovesReview: deletes its branch, if it has one, and forgets its
   launch. What the operator judged of its findings stays."
@@ -442,8 +449,17 @@
                       (github/delete-branch (:results-writer sys)
                                             (assoc repository :branch (get-in r [:run :branch])))
                       {:deleted true})]
-        (if (:failure deleted)
+        (cond
+          (:failure deleted)
           {:ok false :fault :deletion-failed :failure (:failure deleted)}
+
+          ;; GitHub answers 404, not 403, to a token that may not see the
+          ;; results repository, and the client reads a 404 as a branch
+          ;; already gone. The reading credential says whether it really is.
+          (and (:run r) (still-listed? sys repository (get-in r [:run :branch])))
+          {:ok false :fault :branch-still-there}
+
+          :else
           (do (results/forget-run! sys run-id)
               (when-let [eid (db/lookup (db/db (durable sys)) :review-launch/run-id run-id)]
                 (db/transact! (durable sys) [(db/retract-entity eid)]))

@@ -658,7 +658,11 @@ rule ReviewRemoved {
     @guidance
         -- Deleting a branch needs a credential that may write to the results
         -- repository; without one, the removal is refused and nothing
-        -- changes. What the operator judged of the run's findings stays.
+        -- changes. A branch the repository still lists after its deletion
+        -- (GitHub answers a credential that may not see the repository as if
+        -- the branch were already gone) refuses the removal too, so the
+        -- review stays where the operator can see it. What the operator
+        -- judged of the run's findings stays.
 }
 
 ------------------------------------------------------------
