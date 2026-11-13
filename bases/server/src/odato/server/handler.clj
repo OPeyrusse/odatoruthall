@@ -246,7 +246,9 @@
              (= ["sse" "worklog"] (subvec segments 0 2)))
         (if-let [starts-at (t/parse-day (nth segments 2))]
           (sse/stream sys request
-                      {:relevant? sse/worklog-event?
+                      {:relevant? (partial sse/worklog-day-event? starts-at
+                                           #(set (map :work-item-key
+                                                      (:entries (worklog/day sys starts-at)))))
                        :fragment-fn (fn [sys]
                                       (ui/day-fragment sys (worklog/day sys starts-at)))})
           (not-found sys "No such day."))

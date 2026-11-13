@@ -1,6 +1,7 @@
 (ns odato.discovery.interface-test
   (:require [clojure.test :refer [deftest is testing]]
             [odato.discovery.interface :as discovery]
+            [odato.events.interface :as events]
             [odato.fixtures :as fix]
             [odato.github.interface :as github]
             [odato.testing :as testing*]
@@ -231,3 +232,18 @@
     (is (= ["ABC-2"] (map :work-item-key (:entries (worklog/day sys today)))))
     (is (empty? (discovery/orphans-on sys today))
         "Jira activities are never unattributed")))
+
+(deftest every-event-about-a-day-names-it
+  ;; A day's page listens for the events naming it, and only those: an event
+  ;; about a day that does not say so would be lost to that page, and one that
+  ;; is is kept from every other day's.
+  (let [sys (installation)]
+    (discovery/scan! sys today)
+    (let [entry (first (:entries (worklog/day sys today)))]
+      (worklog/enter-time! sys (:id entry) "1h")
+      (worklog/submit-day! sys today))
+    (let [about-a-day (filter #(contains? #{"scan" "worklog"} (namespace (:type %)))
+                              (events/recent (:bus sys)))]
+      (is (seq about-a-day))
+      (is (every? #(= today (:day %)) about-a-day)
+          (pr-str (remove #(= today (:day %)) about-a-day))))))

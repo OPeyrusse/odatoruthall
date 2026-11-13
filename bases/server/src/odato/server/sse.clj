@@ -60,6 +60,21 @@
   (contains? #{"worklog" "scan" "work-item" "connection" "access"}
              (namespace type)))
 
+(defn worklog-day-event?
+  "What changes one day's page: an event about that day, an event about a
+  ticket the day carries, and the credentials every day depends on. An event
+  about another day leaves the page alone: a scan running on Monday must not
+  morph Tuesday's page, which would reset the time field the operator is
+  typing into. `day-keys` answers the tickets the day carries; it is only
+  asked for an event about a ticket."
+  [day-starts-at day-keys event]
+  (and (worklog-event? event)
+       (if-let [day (:day event)]
+         (== day day-starts-at)
+         (if (= "work-item" (namespace (:type event)))
+           (contains? (day-keys) (:key event))
+           true))))
+
 (defn owldesk-event?
   "What changes an owldesk surface: a launch and what the launcher answered,
   a reading of the results branches, a judgement, a removal, the settings,

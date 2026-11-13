@@ -244,7 +244,7 @@
                          :wl-entry/acknowledged-at (now sys)
                          :wl-entry/last-failure nil})))
       (when takes?
-        (emit! sys {:type :worklog/time-read-back-from-jira
+        (emit! sys {:type :worklog/time-read-back-from-jira :day day-starts-at
                     :entry id :key issue-key :logged logged-ms}))
       {:ok true :entry (entry sys id)})
     (do (emit! sys {:type :worklog/jira-time-ignored :day day-starts-at :key issue-key})
@@ -304,5 +304,6 @@
                   :wl-entry/duration-ms entered
                   :wl-entry/status :drafted
                   :wl-entry/last-failure nil})
-        (emit! sys {:type :worklog/time-drafted :entry entry-id :duration entered})
+        (emit! sys {:type :worklog/time-drafted :day (:day-starts-at e)
+                    :entry entry-id :duration entered})
         {:ok true :entry (entry sys entry-id)}))))

@@ -79,12 +79,14 @@
                {:attributed (conj (:attributed-keys a) issue-key)
                 :pending (disj (:pending-keys a) issue-key)})
     (worklog/task-found-on-day! sys (:day-starts-at a) issue-key)
-    (core/emit! sys {:type :scan/line-attributed :activity activity-id :key issue-key})))
+    (core/emit! sys {:type :scan/line-attributed :day (:day-starts-at a)
+                     :activity activity-id :key issue-key})))
 
 (defn- key-never-resolved! [sys activity-id issue-key failure]
   (let [a (core/activity sys activity-id)]
     (put-keys! sys activity-id {:pending (disj (:pending-keys a) issue-key)})
-    (core/emit! sys {:type :scan/line-left-orphan :activity activity-id
+    (core/emit! sys {:type :scan/line-left-orphan :day (:day-starts-at a)
+                     :activity activity-id
                      :key issue-key :failure failure})))
 
 (defn key-found!
@@ -185,7 +187,7 @@
     (let [task (task-row sys task-id)
           github? (= :github (:scan-task/service task))]
       (when (and github? (not (access/budget-available? sys)))
-        (core/emit! sys {:type :scan/waiting-on-quota :scan scan-id
+        (core/emit! sys {:type :scan/waiting-on-quota :day day-starts-at :scan scan-id
                          :until (:budget/resets-at (access/budget sys))})
         (access/await-budget! sys))
       (let [answer (fetch-page sys task day-starts-at cursor)]
@@ -200,7 +202,7 @@
                        {:scan-task/status :failed
                         :scan-task/page-cursor nil
                         :scan-task/failure (:failure answer)})
-              (core/emit! sys {:type :scan/source-failed :scan scan-id
+              (core/emit! sys {:type :scan/source-failed :day day-starts-at :scan scan-id
                                :source (:scan-task/source task)
                                :failure (:failure answer)}))
 
@@ -245,7 +247,7 @@
                   (let [answer (read-task-time sys day-starts-at issue-key)]
                     (if-let [failure (:failure answer)]
                       (do (core/emit! sys {:type :scan/task-time-unread
-                                           :scan scan-id :key issue-key
+                                           :day day-starts-at :scan scan-id :key issue-key
                                            :failure failure})
                           (inc unread))
                       (do (worklog/jira-time-on-task! sys day-starts-at issue-key answer)

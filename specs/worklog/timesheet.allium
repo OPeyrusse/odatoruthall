@@ -215,6 +215,13 @@ surface DaySheet {
         -- and its tickets and their time read as not yet final. Once the
         -- scan ends, the day stops saying so without being reloaded.
 
+    @guarantee AnotherDaysWorkLeavesThisDayAlone
+        -- The day follows what happens to it as it happens -- its scan, its
+        -- tasks, its time, its tickets, the credentials behind it -- and
+        -- nothing else. A scan or a submission running on another day does
+        -- not touch it, so time being typed here is never wiped by work
+        -- elsewhere.
+
     @guarantee ADayDoesOneThingAtATime
         -- While the day is being scanned or submitted, neither can be asked
         -- for on it: both commands wait, and say what the day is busy with,
