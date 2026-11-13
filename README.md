@@ -193,6 +193,68 @@ docker compose down -v                 # stop and throw the worklog away
 It is a convenience, not a requirement: `docker build` and `docker run` above do
 the same thing by hand, and neither the jar nor the image needs compose to run.
 
+## Nix and home-manager
+
+The repository is a flake: it builds the jar from the sources and exports a
+home-manager module running the server as a systemd user service. Running as
+the operator, the server reaches the programs installed in their profile — the
+Claude CLI of owldesk among them.
+
+```nix
+# flake.nix of the home-manager configuration
+inputs.odatoruthall = {
+  url = "github:OPeyrusse/odatoruthall";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+
+# home-manager modules
+modules = [
+  odatoruthall.homeManagerModules.default
+  {
+    services.odatoruthall = {
+      enable = true;
+      environment = {
+        JIRA_BASE_URL = "https://acme.atlassian.net";
+        JIRA_EMAIL = "me@acme.com";
+      };
+      # The default: secrets stay out of the Nix store
+      environmentFiles = [ "-%h/.config/odatoruthall/env" ];
+    };
+  }
+];
+```
+
+The variables of [Credentials](#credentials) that are not secrets are options of
+`services.odatoruthall.environment`. They are written in the Nix store, and
+systemd specifiers are expanded in them (`%h`, `%S`, …).
+
+The secrets — `GITHUB_TOKEN`, `JIRA_TOKEN`, `TURSO_TOKEN`, `OWLLIE_FIRE_TOKEN`,
+`OWLLIE_RESULTS_TOKEN` — go in the files of `environmentFiles`, read by systemd
+when the service starts, as `NAME=value` lines like `.env`. Whatever manages the
+secrets writes them: by default `~/.config/odatoruthall/env`, which may be
+missing (the leading `-`); `%t/…` puts one in the runtime directory instead.
+Their values override those of `environment`. After changing one:
+
+```sh
+systemctl --user restart odatoruthall
+```
+
+The worklog is kept in `~/.local/state/odatoruthall/odatoruthall.edn` unless
+`ODATO_DB_FILE` says otherwise. `javaOptions` and `extraPath` complete the JVM
+options and the PATH of the service; see _nix/module.nix_.
+
+```sh
+systemctl --user status odatoruthall
+journalctl --user -u odatoruthall -f
+```
+
+The nix build pins the Maven dependencies in _deps-lock.json_. Regenerate it
+after any change of a `deps.edn`:
+
+```sh
+nix run .#deps-lock
+```
+
 ## Everything else
 
 ```sh
