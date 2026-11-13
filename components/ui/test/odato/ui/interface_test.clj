@@ -165,7 +165,7 @@
         body (ui/worklog-page sys)]
     (is (str/includes? body "Last five working days"))
     (is (str/includes? body "2026-09-09"))
-    (is (str/includes? body "Nothing on this day yet."))
+    (is (str/includes? body "Nothing on these days yet."))
     (testing "and a day reads back as it was filled"
       (let [day-starts-at (:starts-at (last (worklog/window sys)))]
         (worklog/window sys)
@@ -176,6 +176,28 @@
           (is (str/includes? body "ABC-1"))
           (is (str/includes? body "1h 30m"))
           (is (str/includes? body "Loose ends")))))))
+
+(defn- occurrences [body text]
+  (count (re-seq (re-pattern (java.util.regex.Pattern/quote text)) body)))
+
+(deftest the-timesheet-reads-one-row-per-ticket
+  (let [sys (installation)
+        [monday tuesday wednesday] (map :starts-at (worklog/window sys))]
+    (odato.work-item.interface/resolve! sys "ABC-2")
+    (worklog/name-task! sys monday "ABC-1")
+    (worklog/name-task! sys wednesday "ABC-1")
+    (worklog/task-found-on-day! sys tuesday "ABC-2")
+    (let [entry (first (:entries (worklog/day sys wednesday)))]
+      (worklog/enter-time! sys (:id entry) "2h"))
+    (let [body (ui/worklog-fragment sys)]
+      (testing "a ticket worked on two days is one row, its title said once"
+        (is (= 1 (occurrences body "Ship it")))
+        (is (str/includes? body "2h")))
+      (testing "the ticket the operator named reads before the one a scan found"
+        (is (< (str/index-of body "Ship it") (str/index-of body "Fix it"))))
+      (testing "and each day keeps its commands under its heading"
+        (is (= 5 (occurrences body ">Scan</button>")))
+        (is (= 5 (occurrences body "Submit to Jira")))))))
 
 (deftest the-day-says-what-jira-holds
   (let [sys (installation)
@@ -215,8 +237,8 @@
                          "in Jira · 2 worklogs")))))
 
 (def ^:private greyed-in-card
-  "A ticket's key on the timesheet, while its day is scanned."
-  "font-medium text-slate-600 dark:text-slate-400")
+  "A ticket's time on the timesheet, while its day is scanned."
+  "font-medium tabular-nums hover:underline text-slate-600 dark:text-slate-400")
 
 (def ^:private greyed-on-day
   "A ticket's key on its day, while the day is scanned."
