@@ -8,19 +8,20 @@
             [odato.jira.interface :as jira]
             [odato.worklog.core :as core]))
 
-(defn- acknowledged! [sys entry-id worklog-id]
-  (db/put! (core/conn sys) :wl-entry/id entry-id
+(defn- acknowledged! [sys e worklog-id]
+  (db/put! (core/conn sys) :wl-entry/id (:id e)
            {:wl-entry/status :acknowledged
             :wl-entry/jira-worklog-id worklog-id
             :wl-entry/acknowledged-at (core/now sys)
             :wl-entry/last-failure nil})
-  (core/emit! sys {:type :worklog/time-reached-jira :entry entry-id :worklog worklog-id}))
+  (core/emit! sys {:type :worklog/time-reached-jira :day (:day-starts-at e)
+                   :entry (:id e) :worklog worklog-id}))
 
-(defn- rejected! [sys entry-id failure]
-  (db/put! (core/conn sys) :wl-entry/id entry-id
+(defn- rejected! [sys e failure]
+  (db/put! (core/conn sys) :wl-entry/id (:id e)
            {:wl-entry/status :rejected :wl-entry/last-failure failure})
-  (core/emit! sys {:type :worklog/time-did-not-reach-jira
-                   :entry entry-id :failure failure}))
+  (core/emit! sys {:type :worklog/time-did-not-reach-jira :day (:day-starts-at e)
+                   :entry (:id e) :failure failure}))
 
 (defn- submit-entry!
   "EntrySubmitted, and what Jira made of it. An entry Jira already holds is
@@ -38,8 +39,8 @@
                                          :duration-ms (:duration-ms e)})
                     (catch Exception _ {:failure :jira-unreachable}))]
     (if-let [failure (:failure answer)]
-      (do (rejected! sys (:id e) failure) :rejected)
-      (do (acknowledged! sys (:id e) (:worklog-id answer)) :acknowledged))))
+      (do (rejected! sys e failure) :rejected)
+      (do (acknowledged! sys e (:worklog-id answer)) :acknowledged))))
 
 (defn submit-day!
   "DaySubmitted / DayNotSubmitted. Only what Jira does not already hold is
@@ -92,18 +93,21 @@
         (if-let [failure (:failure answer)]
           (do (db/put! (core/conn sys) :wl-entry/id entry-id
                        {:wl-entry/last-failure failure})
-              (core/emit! sys {:type :worklog/still-in-jira :entry entry-id
+              (core/emit! sys {:type :worklog/still-in-jira :day (:day-starts-at e)
+                               :entry entry-id
                                :failure failure})
               {:ok false :fault failure})
           (do (db/transact! (core/conn sys)
                             [(db/retract-entity
                               (db/lookup (db/db (core/conn sys)) :wl-entry/id entry-id))])
-              (core/emit! sys {:type :worklog/entry-removed :entry entry-id})
+              (core/emit! sys {:type :worklog/entry-removed :day (:day-starts-at e)
+                               :entry entry-id})
               {:ok true})))
 
       :else
       (do (db/transact! (core/conn sys)
                         [(db/retract-entity
                           (db/lookup (db/db (core/conn sys)) :wl-entry/id entry-id))])
-          (core/emit! sys {:type :worklog/entry-removed :entry entry-id})
+          (core/emit! sys {:type :worklog/entry-removed :day (:day-starts-at e)
+                               :entry entry-id})
           {:ok true}))))
