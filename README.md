@@ -216,24 +216,28 @@ modules = [
       environment = {
         JIRA_BASE_URL = "https://acme.atlassian.net";
         JIRA_EMAIL = "me@acme.com";
-        # Secrets are read when the service starts, never written in the store
-        GITHUB_TOKEN.command = "pass show work/github-token";
-        JIRA_TOKEN.file = "/run/user/1000/secrets/jira-token";
       };
+      # The default: secrets stay out of the Nix store
+      environmentFiles = [ "-%h/.config/odatoruthall/env" ];
     };
   }
 ];
 ```
 
-Every variable of [Credentials](#credentials) is an option of
-`services.odatoruthall.environment`, and takes one of:
+The variables of [Credentials](#credentials) that are not secrets are options of
+`services.odatoruthall.environment`. They are written in the Nix store, and
+systemd specifiers are expanded in them (`%h`, `%S`, …).
 
-- a string, or `{ value = "…"; }`: a literal, written in the Nix store, so
-  never a secret. systemd specifiers are expanded (`%h`, `%S`, …);
-- `{ file = "…"; }`: a file read when the service starts, as written by
-  sops-nix, agenix, or anything else;
-- `{ command = "…"; }`: a shell command printing the value, run when the service
-  starts with the PATH of the service. A failing command stops the start.
+The secrets — `GITHUB_TOKEN`, `JIRA_TOKEN`, `TURSO_TOKEN`, `OWLLIE_FIRE_TOKEN`,
+`OWLLIE_RESULTS_TOKEN` — go in the files of `environmentFiles`, read by systemd
+when the service starts, as `NAME=value` lines like `.env`. Whatever manages the
+secrets writes them: by default `~/.config/odatoruthall/env`, which may be
+missing (the leading `-`); `%t/…` puts one in the runtime directory instead.
+Their values override those of `environment`. After changing one:
+
+```sh
+systemctl --user restart odatoruthall
+```
 
 The worklog is kept in `~/.local/state/odatoruthall/odatoruthall.edn` unless
 `ODATO_DB_FILE` says otherwise. `javaOptions` and `extraPath` complete the JVM
