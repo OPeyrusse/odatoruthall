@@ -342,6 +342,14 @@ These settle worklog:
 - **Merging happens on GitHub.** owldesk links the pull request and says its
   state (draft, conflicting, checks failing); it never writes to Owllie's
   repository.
+- **Misses are diagnosed before anything changes.** A missed remark points at
+  lines of the diff on either side (a miss outside the diff at the lines that
+  cause it) and may say the severity it should have had. Reviewers' comments
+  on the pull request that fall where the review found nothing are offered as
+  candidate misses, never drafted on their own. Owllie tells a miss found and
+  filtered out, an agent not run, a rule not applied, a rule too narrow, no
+  rule and a topic out of every agent's scope apart; only a rule not applied,
+  a rule too narrow and no rule lead to a change of the rules or the agents.
 - **The code comes from the review's diff.** Owllie writes the diff it read
   as a `diff` block of the inputs step, and the commit it read in
   `process.json`. owldesk shows findings in context from that diff, lets the

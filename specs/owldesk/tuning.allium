@@ -14,6 +14,14 @@
 -- code, writes evaluation cases and rule changes, measures them, and opens one
 -- pull request on Owllie's own repository.
 --
+-- A miss is the hardest remark to write, since nothing on screen points at
+-- it. Lines of the diff, added, kept or removed, can each carry one, and the
+-- comments reviewers wrote on the pull request are offered as candidates:
+-- those on lines where the review found nothing can be turned into a missed
+-- remark, or dismissed. Owllie then diagnoses each miss before changing
+-- anything: found and filtered out, agent not run, rule not applied, rule
+-- too narrow, no rule, or out of every agent's scope.
+--
 -- As for a review, the session writes where it stands to a branch of the
 -- results repository, tune/<run id>, in the layout Owllie documents, and the
 -- installation reads that branch the way it reads a review's. The branch
@@ -46,13 +54,19 @@ enum RemarkKind {
     | relevant          -- a finding that is right: an example to keep
     | wrong_severity    -- a finding raised at the wrong severity
     | unclear           -- a finding whose text does not say what is wrong
-    | missed            -- lines of the diff the review should have flagged
+    | missed            -- lines of the diff, on either side, the review
+                        -- should have flagged
     | general           -- the review as a whole, tied to no code
 }
 
 enum RemarkStatus { draft | sent }
 
 enum RemarkSeverity { blocker | major | minor | info }
+
+enum DiffSide {
+    new                 -- lines after the change: added or kept
+    | old               -- lines the change removed
+}
 
 enum RemarkFault {
     no_results              -- the review has no branch to point into
@@ -93,8 +107,9 @@ enum TuningPullRequestState { open | merged | closed }
 ------------------------------------------------------------
 
 value CodeLines {
-    -- Lines on the new side of a review's diff.
+    -- Lines of a review's diff, numbered on their side.
     file: String
+    side: DiffSide
     line: Integer
     end_line: Integer
 }
@@ -113,6 +128,19 @@ value FindingCopy {
 ------------------------------------------------------------
 -- External Entities
 ------------------------------------------------------------
+
+external entity ReviewComment {
+    -- A reviewer's comment on lines of the reviewed pull request, as GitHub
+    -- reports it, placed in the diff the review read.
+    pull_request: review/PullRequestReference
+    comment_id: String
+    author: String
+    by_operator: Boolean
+    lines: CodeLines?               -- null when its lines cannot be found in
+                                    -- the review's diff
+    body: String
+    url: String
+}
 
 external entity TuningLaunchAnswer {
     -- What the launcher hands back for one batch: the session it started, or
@@ -163,7 +191,11 @@ entity TuningRemark {
     rule: String?                   -- the rule it is about; for a missed
                                     -- remark, the one that should have applied
     note: String
-    proposed_severity: RemarkSeverity?
+    proposed_severity: RemarkSeverity?  -- for a wrong severity remark, the
+                                        -- right one; for a missed remark, the
+                                        -- one it should have had, if said
+    from_comment: String?           -- the reviewer's comment it was drafted
+                                    -- from
     status: RemarkStatus
     batch: TuningLaunch?
     created_at: Timestamp
@@ -173,6 +205,13 @@ entity TuningRemark {
         draft -> sent
         terminal: sent
     }
+}
+
+entity DismissedComment {
+    -- A reviewer's comment the operator said was not a miss of the review.
+    review_run_id: String
+    comment_id: String
+    dismissed_at: Timestamp
 }
 
 entity TuningLaunch {
@@ -261,6 +300,9 @@ entity Tuning {
 config {
     max_remarks_per_batch: Integer = 20
     max_note_length: Integer = 2000
+    -- A reviewer's comment within this many lines of a finding of the same
+    -- file is taken as covered by it, and not offered as a miss.
+    candidate_distance_lines: Integer = 3
     -- The lines of the diff kept around a remark's lines, on each side.
     excerpt_context_lines: Integer = 5
     -- A tuning reads more than a review and writes more: it is given longer.
@@ -311,6 +353,7 @@ rule RemarkDrafted {
                 excerpt: excerpt_of(subject, lines),
                 rule: rule_id,
                 note: note,
+                proposed_severity: proposed_severity,
                 status: draft,
                 created_at: now,
                 updated_at: now)
@@ -322,7 +365,11 @@ rule RemarkDrafted {
         -- block of its inputs step): the remark's lines and
         -- excerpt_context_lines on each side, within the same hunk. A finding
         -- whose lines are not in the diff keeps its quote alone. A remark on
-        -- a general matter has no lines and no excerpt.
+        -- a general matter has no lines, no excerpt and no severity.
+        --
+        -- A miss outside the diff -- a caller left unchanged, a test that
+        -- does not exist -- is pointed at the lines of the diff that cause
+        -- it, and its note says where it shows.
 }
 
 rule RemarkRefused {
@@ -420,6 +467,42 @@ rule RemarkRedrafted {
         -- draft of the same review, to change and send again. It works even
         -- once the review's branch is gone, since the remark carries its
         -- finding and its code.
+}
+
+rule RemarkDraftedFromComment {
+    when: OperatorDraftsRemarkFromComment(subject, comment)
+    requires: subject.run != null
+    requires: comment.pull_request = subject.pull_request
+    requires: comment.lines != null and lines_in_diff(subject, comment.lines)
+    ensures:
+        TuningRemark.created(
+            id: new_remark_id(subject.run_id),
+            review_run_id: subject.run_id,
+            pull_request: subject.pull_request,
+            kind: missed,
+            lines: comment.lines,
+            excerpt: excerpt_of(subject, comment.lines),
+            note: truncated(comment.body, config.max_note_length),
+            from_comment: comment.comment_id,
+            status: draft,
+            created_at: now,
+            updated_at: now)
+
+    @guidance
+        -- The draft is a missed remark like any other: the operator reads
+        -- it, rewrites the note into what the review should have said, names
+        -- the rule if they know it, and may delete it. A comment a draft was
+        -- made from is no longer offered.
+}
+
+rule CommentDismissed {
+    when: OperatorDismissesComment(subject, comment)
+    requires: not exists DismissedComment{review_run_id: subject.run_id, comment_id: comment.comment_id}
+    ensures:
+        DismissedComment.created(
+            review_run_id: subject.run_id,
+            comment_id: comment.comment_id,
+            dismissed_at: now)
 }
 
 ------------------------------------------------------------
@@ -711,4 +794,23 @@ surface TuningResultsIntegration {
     @guarantee ReadOnly
         -- Tuning branches and pull requests are read with the operator's
         -- GitHub credential; nothing is written to Owllie's repository.
+}
+
+surface ReviewCommentsIntegration {
+    facing gateway: access/GithubGateway
+
+    exposes:
+        gateway.budget_remaining
+        for each in review/Reviews where is_done:
+            each.pull_request
+            each.run.head_sha
+
+    @guarantee CommentsArePlacedInTheReviewedDiff
+        -- The review comments of a reviewed pull request are read with the
+        -- operator's GitHub credential when the page of one of its done
+        -- reviews is opened, at most once per reading interval. A comment is
+        -- placed on the lines of the review's diff it was written on: as it
+        -- is when it was written on the commit the review read, and otherwise
+        -- only when the same lines, with the same text, are in that diff.
+        -- Replies in a thread and the author's own comments are left out.
 }

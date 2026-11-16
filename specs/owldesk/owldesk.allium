@@ -79,6 +79,7 @@ surface ReviewPage {
     let remarks = tuning/TuningRemarks where review_run_id = subject.run_id
     let drafts = tuning/TuningRemarks where review_run_id = subject.run_id and status = draft
     let tunings = tuning/Tunings where review_run_id = subject.run_id
+    let candidates = tuning/ReviewComments where suggests_miss(subject, this)
 
     exposes:
         operator.account_login
@@ -134,6 +135,12 @@ surface ReviewPage {
             each.is_failed
             each.never_started
             each.is_given_up
+        for each in candidates:
+            each.author
+            each.by_operator
+            each.lines
+            each.body
+            each.url
 
     provides:
         for fingerprint in findings_of(subject):
@@ -146,6 +153,9 @@ surface ReviewPage {
             tuning/OperatorDeletesRemark(each)
         for each in remarks where status = sent:
             tuning/OperatorRedraftsRemark(each)
+        for each in candidates:
+            tuning/OperatorDraftsRemarkFromComment(subject, each)
+            tuning/OperatorDismissesComment(subject, each)
         tuning/OperatorSendsRemarks(subject)
         OperatorRemovesReview(subject)
 
@@ -182,10 +192,20 @@ surface ReviewPage {
 
     @guarantee RemarksStartWhereTheCodeIs
         -- Every finding a step shows offers a remark on it, of any finding
-        -- kind; every line, or run of lines, on the new side of the diff
-        -- offers a missed remark; and the remarks section offers a general
-        -- remark. A false positive or relevant remark marks the finding
-        -- that way at the same time.
+        -- kind; every line, or run of lines, of the diff -- added, kept or
+        -- removed -- offers a missed remark, with the severity it should have
+        -- had; and the remarks section offers a general remark. A false
+        -- positive or relevant remark marks the finding that way at the same
+        -- time.
+
+    @guarantee MissesAreSuggestedFromComments
+        -- Once the review is done, the remarks section lists the comments
+        -- reviewers wrote on the pull request, the operator's first, that
+        -- fall on lines of the diff with no finding within
+        -- candidate_distance_lines, and that were neither turned into a
+        -- remark nor dismissed. Each shows its author, its lines in the diff
+        -- and its text, links to it on GitHub, and can be turned into a
+        -- missed draft or dismissed. Nothing is drafted or sent on its own.
 
     @guarantee RemarksAreGatheredThenSent
         -- The review has a section of its own for its remarks: every draft,
