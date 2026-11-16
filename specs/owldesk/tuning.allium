@@ -710,9 +710,8 @@ rule OperatorRemovesTuning {
     @guidance
         -- The remarks of the batch stay, sent, and can still be copied into
         -- new drafts; the pull request on Owllie's repository is not
-        -- touched. A cleanup proposes a tuning when its pull request was
-        -- merged or closed, or when it was given up, longer ago than the
-        -- matching retention of the review settings.
+        -- touched. Tunings are removed one by one, from their page: the
+        -- cleanup of old reviews leaves them alone.
 }
 
 ------------------------------------------------------------

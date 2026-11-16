@@ -15,10 +15,13 @@
     :results-writer  a GitHub client that may delete branches of the results
                      repository, or nil
     :launchers       {:scheduled-task <launcher|nil> :claude-cli <launcher|nil>}
+    :tune-launchers  the same, for the tuning (specs/owldesk/tuning.allium)
     :executor        where launches and readings run (inline without one)"
   (:require [odato.review.core :as core]
+            [odato.review.diff :as diff]
             [odato.review.results :as results]
-            [odato.review.settings :as settings]))
+            [odato.review.settings :as settings]
+            [odato.review.tuning :as tuning]))
 
 (def timing core/timing)
 (def schema core/schema)
@@ -100,9 +103,10 @@
 
 (defn tick!
   "Called every so often by the scheduler: reads the results branches when
-  they are due."
+  they are due, and the tunings' pull requests while they are open."
   [sys]
-  (core/tick! sys))
+  (core/tick! sys (tuning/active? sys))
+  (tuning/refresh-pull-requests! sys))
 
 (defn read-soon! [sys] (core/read-soon! sys))
 
@@ -168,3 +172,89 @@
   "Removes every candidate: `{:removed n :failed [...]}`."
   [sys]
   (core/clean-up! sys))
+
+;; ------------------------------------------------------------------- tuning
+
+(def tuning-timing tuning/timing)
+(def tuning-limits tuning/limits)
+(def remark-kinds tuning/kinds)
+(def finding-remark-kinds tuning/finding-kinds)
+(def severities tuning/severities)
+
+(defn parse-remark-kind [s] (tuning/parse-kind s))
+
+(defn diff-text
+  "The diff a review read, as Owllie wrote it, or nil."
+  [review]
+  (tuning/diff-text review))
+
+(defn review-diff
+  "The diff a review read, parsed: `[{:file :old-file :hunks [{:header :lines
+  [{:kind :add|:del|:ctx :old :new :text}]}]}]`, or nil."
+  [review]
+  (tuning/review-diff review))
+
+(defn parse-diff [text] (diff/parse text))
+
+(defn finding-excerpt
+  "The lines of the review's diff around a finding, its own marked, or nil."
+  [review finding]
+  (tuning/finding-excerpt review finding))
+
+(defn lines-excerpt
+  "The lines of the review's diff around `{:file :side :line :end-line}`,
+  those marked, or nil when they are not in it."
+  [review lines]
+  (tuning/lines-excerpt review lines))
+
+(defn remarks
+  "A review's remarks, in the order they were written: `{:id :kind :finding
+  :lines :excerpt :quote :rule :note :proposed-severity :from-comment :status
+  :batch ...}`."
+  [sys review-run-id]
+  (tuning/remarks sys review-run-id))
+
+(defn remark [sys id] (tuning/remark sys id))
+
+(defn draft-remark!
+  "OperatorDraftsRemark: `{:ok true :remark-id ...}` or `{:ok false :fault ...}`."
+  [sys review-run-id proposal]
+  (tuning/draft! sys review-run-id proposal))
+
+(defn edit-remark! [sys id proposal] (tuning/edit! sys id proposal))
+(defn delete-remark! [sys id] (tuning/delete! sys id))
+(defn redraft-remark! [sys id] (tuning/redraft! sys id))
+
+(defn send-remarks!
+  "OperatorSendsRemarks: `{:ok true :run-id ...}` or `{:ok false :refusal ...}`."
+  [sys review-run-id]
+  (tuning/send! sys review-run-id))
+
+(defn tune-launcher-available? [sys kind] (tuning/launcher-available? sys kind))
+
+(defn tunings
+  "Every tuning, the most recent first: `{:run-id :review-run-id :launch :run
+  :pull-request {:url :state :draft :mergeable-state} :state :active?
+  :given-up? :title}`."
+  [sys]
+  (tuning/tunings sys))
+
+(defn tuning [sys run-id] (tuning/tuning sys run-id))
+(defn tunings-of [sys review-run-id] (tuning/tunings-of sys review-run-id))
+(defn tuning-request-text [sys run-id] (tuning/request-text sys run-id))
+(defn refresh-tuning-pull-requests! [sys] (tuning/refresh-pull-requests! sys))
+(defn remove-tuning! [sys run-id] (tuning/remove! sys run-id))
+
+(defn read-comments-soon! [sys review] (tuning/read-comments-soon! sys review))
+(defn read-comments! [sys review] (tuning/read-comments! sys review))
+
+(defn miss-candidates
+  "Reviewers' comments that may point at misses of the review."
+  [sys review]
+  (tuning/candidates sys review))
+
+(defn draft-from-comment! [sys review-run-id comment-id]
+  (tuning/draft-from-comment! sys review-run-id comment-id))
+
+(defn dismiss-comment! [sys review-run-id comment-id]
+  (tuning/dismiss-comment! sys review-run-id comment-id))

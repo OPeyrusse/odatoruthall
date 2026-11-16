@@ -15,7 +15,7 @@
 (def results-repository {:owner "acme" :name "owllie-results"})
 
 (def phases
-  [["prepare" "Preparation" [["inputs" "Inputs" "md"]]]
+  [["prepare" "Preparation" [["inputs" "Inputs"]]]
    ["phase1" "Phase 1" [["intent-reader" "Intent reader"] ["general-rules" "General rules"]
                         ["edge-case-tests" "Edge-case tests"] ["impact" "Impact"] ["naming" "Naming"]]]
    ["phase2" "Phase 2" [["intent-comparator" "Intent comparator"] ["concurrency" "Concurrency"]
@@ -116,11 +116,16 @@
 
 ;; --------------------------------------------------------------------- files
 
+(def head-sha
+  "The commit every demo review read."
+  "d07be31c0b8f6a4f1f1d6a3b2e9c8d7f6a5b4c3d")
+
 (defn process-file [pr run-id]
   {:schema "owllie-run/2"
    :run_id run-id
    :title (:title pr)
-   :pull_request {:url (str "https://github.com/" (:owner pr) "/" (:name pr) "/pull/" (:number pr))}
+   :pull_request {:url (str "https://github.com/" (:owner pr) "/" (:name pr) "/pull/" (:number pr))
+                  :head_sha head-sha}
    :details [{:label "Head" :value "d07be31"} {:label "Brain" :value "main @ 73a41fc"}
              {:label "Diff" :value "412 lines in 6 files"}]
    :summary_step "synthesis"
@@ -136,11 +141,102 @@
   [{:label "blocker" :value 1 :tone "red"} {:label "major" :value 2 :tone "amber"}
    {:label "minor" :value 1 :tone "neutral"} {:label "info" :value 0 :tone "neutral"}])
 
+(def ^:private snapshot-cache
+  "The new file the demo pull request adds: the findings point into it."
+  ["package acme.widget;"
+   ""
+   "import java.time.Duration;"
+   "import java.util.LinkedHashMap;"
+   "import java.util.List;"
+   "import java.util.Map;"
+   "import org.springframework.stereotype.Component;"
+   ""
+   "/**"
+   " * Keeps the last snapshot of each widget between two renders."
+   " */"
+   "@Component"
+   "public class SnapshotCache {"
+   ""
+   "  private final SnapshotLoader loader;"
+   "  private final Clock clock;"
+   ""
+   "  private final Map<String, Snapshot> byKey = new LinkedHashMap<>();"
+   ""
+   "  public SnapshotCache(SnapshotLoader loader, Clock clock) {"
+   "    this.loader = loader;"
+   "    this.clock = clock;"
+   "  }"
+   ""
+   "  public Snapshot get(String key) {"
+   "    Snapshot snapshot = byKey.get(key);"
+   "    if (snapshot == null || snapshot.isOlderThan(clock.now(), Duration.ofMinutes(5))) {"
+   "      snapshot = load(key);"
+   "      byKey.put(key, snapshot);"
+   "    }"
+   "    return snapshot;"
+   "  }"
+   ""
+   "  public int size() {"
+   "    return byKey.size();"
+   "  }"
+   ""
+   "  /**"
+   "   * Loads every key ahead of the first render."
+   "   */"
+   "  public void warm(String[] keys) {"
+   "    for (String key : keys) {"
+   "      ensure(key);"
+   "    }"
+   "  }"
+   ""
+   "  public void clear() {"
+   "    byKey.clear();"
+   "  }"
+   ""
+   "  private void ensure(String key) {"
+   "    if (!byKey.containsKey(key)) { byKey.put(key, load(key)); }"
+   "  }"
+   ""
+   "  private Snapshot load(String key) {"
+   "    return loader.load(key);"
+   "  }"
+   "}"])
+
+(def diff
+  "The diff the demo reviews read, as Owllie writes it in the inputs step."
+  (str "diff --git a/src/main/java/acme/widget/Renderer.java b/src/main/java/acme/widget/Renderer.java\n"
+       "index 3e0f2b1..d07be31 100644\n"
+       "--- a/src/main/java/acme/widget/Renderer.java\n"
+       "+++ b/src/main/java/acme/widget/Renderer.java\n"
+       "@@ -8,6 +8,8 @@ import java.util.List;\n"
+       " import java.util.Locale;\n"
+       " \n"
+       " public class Renderer {\n"
+       "-  private Snapshot last;\n"
+       "+\n"
+       "+  private static final Duration TTL = Duration.ofMinutes(5);\n"
+       "+  private final SnapshotCache cache;\n"
+       "   private final Theme theme;\n"
+       " \n"
+       "diff --git a/src/main/java/acme/widget/SnapshotCache.java b/src/main/java/acme/widget/SnapshotCache.java\n"
+       "new file mode 100644\n"
+       "index 0000000..5d41402\n"
+       "--- /dev/null\n"
+       "+++ b/src/main/java/acme/widget/SnapshotCache.java\n"
+       "@@ -0,0 +1," (count snapshot-cache) " @@\n"
+       (apply str (for [line snapshot-cache] (str "+" line "\n")))))
+
 (defn- inputs-md [pr]
   (str "**" (:title pr) "** by " (:author pr) "\n\n"
-       "`main` @ `3e0f2b1` ← `feature` @ `d07be31` · 412 diff lines in 6 files\n\n"
+       "`main` @ `3e0f2b1` ← `feature` @ `d07be31` · 70 diff lines in 2 files\n\n"
        "### Description\n\nCaches the rendered snapshot between two renders.\n\n"
-       "### Files\n\n```\n src/main/java/acme/widget/SnapshotCache.java | 64 +++++\n```\n"))
+       "### Files\n\n```\n src/main/java/acme/widget/Renderer.java      |  5 ++-\n"
+       " src/main/java/acme/widget/SnapshotCache.java | 58 +++++\n```\n"))
+
+(defn- inputs-step [pr]
+  {:status "done" :title "Inputs" :meta []
+   :blocks [{:type "markdown" :text (inputs-md pr)}
+            {:type "diff" :title "Diff" :text diff}]})
 
 (defn- extras [agent]
   (case agent
@@ -190,7 +286,7 @@
 
 (defn- base-files [pr run-id]
   {"owllie/process.json" (write (process-file pr run-id))
-   (step-path "inputs" "md") (inputs-md pr)})
+   (step-path "inputs" nil) (write (inputs-step pr))})
 
 (defn done-run
   "The files of a review that went to the end."
@@ -240,6 +336,10 @@
                    :let [id (run-id ms suffix)]]
                [(branch p id) (files-of p id ms)]))))
 
+(def tuning-pull-request
+  "The pull request a demo tuning opens on Owllie's rules."
+  {:owner "acme" :name "owllie" :number 7})
+
 (defn github-script
   "What the demo's mock GitHub adds for owldesk."
   [now]
@@ -247,12 +347,31 @@
                   "acme/widget" {:default-branch "main"}
                   "acme/gear" {:default-branch "main"}}
    :pull-request-details
-   (into {} (for [[k p] pull-requests]
+   (into {(str (:owner tuning-pull-request) "/" (:name tuning-pull-request) "#" (:number tuning-pull-request))
+          {:title "Tune R-COLL-001: maps written back in reading order" :author "owllie" :state :open
+           :draft false :mergeable-state "clean"
+           :url (str "https://github.com/" (:owner tuning-pull-request) "/" (:name tuning-pull-request)
+                     "/pull/" (:number tuning-pull-request))}}
+         (for [[k p] pull-requests]
               [k {:title (:title p) :author (:author p) :state (:state p)
                   :closed-at (when (not= :open (:state p)) (- now (t/days 19)))
-                  :head-sha "d07be31" :url (str "https://github.com/" (:owner p) "/" (:name p)
-                                                "/pull/" (:number p))}]))
-   :branches {"acme/owllie-results" (seed-branches now)}})
+                  :head-sha head-sha :url (str "https://github.com/" (:owner p) "/" (:name p)
+                                               "/pull/" (:number p))}]))
+   :branches {"acme/owllie-results" (seed-branches now)}
+   :review-comments
+   {"acme/widget#412"
+    [{:id "9001" :author "grace" :path "src/main/java/acme/widget/SnapshotCache.java"
+      :line 27 :original-line 27 :side "RIGHT" :commit-id head-sha :original-commit-id head-sha
+      :body "The five minutes are a magic number: Renderer has the same TTL. Share one constant."
+      :url "https://github.com/acme/widget/pull/412#discussion_r9001"}
+     {:id "9002" :author "linus" :path "src/main/java/acme/widget/SnapshotCache.java"
+      :line 48 :original-line 48 :side "RIGHT" :commit-id head-sha :original-commit-id head-sha
+      :body "clear() races with get(): a render can put back what was just cleared."
+      :url "https://github.com/acme/widget/pull/412#discussion_r9002"}
+     {:id "9003" :author "ada" :path "src/main/java/acme/widget/SnapshotCache.java"
+      :line 48 :original-line 48 :side "RIGHT" :commit-id head-sha :original-commit-id head-sha
+      :in-reply-to "9002" :body "Good catch, fixing."
+      :url "https://github.com/acme/widget/pull/412#discussion_r9003"}]}})
 
 ;; ------------------------------------------------------- the simulated run
 
@@ -276,7 +395,7 @@
        (fn []
          (try
            (step! (merge {"owllie/process.json" (write (process-file pr run-id))} (status "running" nil)))
-           (step! (merge {(step-path "inputs" "md") (inputs-md pr)} (status "running" nil)))
+           (step! (merge {(step-path "inputs" nil) (write (inputs-step pr))} (status "running" nil)))
            (step! (merge (into {} (for [a (take 3 agents)] [(step-path a nil) (write (agent-step a))]))
                          (status "running" nil)))
            (step! (merge (into {} (for [a (drop 3 (take 5 agents))] [(step-path a nil) (write (agent-step a))]))
@@ -287,4 +406,109 @@
                          (status "done" headline)))
            (catch InterruptedException _ nil))))
       {:session-id (str "session_demo" (str/replace (str run-id) #"[^A-Za-z0-9]" ""))
+       :session-url "https://claude.ai/code"})))
+
+;; ------------------------------------------------------ the simulated tuning
+
+(def ^:private tuning-phases
+  [["prepare" "Preparation" [["inputs" "Inputs"]]]
+   ["diagnose" "Diagnosis" [["diagnosis" "Misses"]]]
+   ["draft" "Drafts" [["tune-general-rules" "General rules"]]]
+   ["validate" "Validation" [["validation" "Cases"] ["replay" "Real diff"] ["leak-check" "Leak check"]]]
+   ["publish" "Publication" [["pull-request" "Pull request"]]]])
+
+(defn- tuning-process [run-id remarks]
+  {:schema "owllie-run/2"
+   :run_id run-id
+   :title (str "Tune from " remarks " remark" (when (not= 1 remarks) "s"))
+   :pull_request {:url "https://github.com/acme/widget/pull/412" :head_sha head-sha}
+   :details [{:label "Brain" :value "main @ 73a41fc"}]
+   :summary_step "pull-request"
+   :phases (vec (for [[id title steps] tuning-phases]
+                  {:id id :title title
+                   :steps (vec (for [[step-id step-title] steps]
+                                 {:id step-id :title step-title :file (step-path step-id nil)}))}))})
+
+(def ^:private rule-change
+  (str "diff --git a/rules/general-rules.md b/rules/general-rules.md\n"
+       "--- a/rules/general-rules.md\n"
+       "+++ b/rules/general-rules.md\n"
+       "@@ -71,7 +71,8 @@\n"
+       " - **instruction**: only allowed when it is explicit that the items must be returned in the same order as they were read.\n"
+       "-- **exceptions**: LRU caches built on `LinkedHashMap(…, true)` with `removeEldestEntry`.\n"
+       "+- **exceptions**: LRU caches built on `LinkedHashMap(…, true)` with `removeEldestEntry`; a map whose\n"
+       "+  entries are written back in reading order by a method of the same class.\n"
+       " - **bad**: `final Set<Long> definitionIds = new LinkedHashSet<>();`\n"))
+
+(defn- tuning-step [title blocks]
+  {:status "done" :title title :meta [] :blocks blocks})
+
+(defn tuning-files
+  "The files of a tuning, up to `stage` (1 to 5)."
+  [run-id remarks stage]
+  (let [pr-url (str "https://github.com/" (:owner tuning-pull-request) "/" (:name tuning-pull-request)
+                    "/pull/" (:number tuning-pull-request))]
+    (cond-> {"owllie/process.json" (write (tuning-process run-id remarks))}
+      (>= stage 1)
+      (assoc (step-path "inputs" nil)
+             (write (tuning-step "Inputs" [{:type "markdown"
+                                            :text (str "Review of acme/widget#412 at `d07be31`, "
+                                                       remarks " remark(s).")}])))
+      (>= stage 2)
+      (assoc (step-path "diagnosis" nil)
+             (write (tuning-step "Misses" [{:type "table" :columns ["Remark" "Cause" "Evidence"]
+                                            :rows [["r2" "rule_too_narrow" "R-CONC-001 covers maps of a singleton only"]]}])))
+      (>= stage 3)
+      (assoc (step-path "tune-general-rules" nil)
+             (write (tuning-step "General rules" [{:type "markdown" :text "**r1** applied: an exception for maps written back in reading order."}
+                                                  {:type "diff" :title "rules/general-rules.md" :text rule-change}])))
+      (>= stage 4)
+      (assoc (step-path "validation" nil)
+             (write (tuning-step "Cases" [{:type "table" :columns ["Case" "Before" "After" "Expected"]
+                                           :rows [["general-rules/linked-map-written-back" "found" "not found" "not found"]
+                                                  ["general-rules/linked-map-written-back-ok" "found" "found" "found"]]}]))
+             (step-path "replay" nil)
+             (write (tuning-step "Real diff" [{:type "table" :columns ["Remark" "Before" "After" "Met"]
+                                               :rows [["r1" "3/3 found" "0/3 found" "yes"]]}]))
+             (step-path "leak-check" nil)
+             (write (tuning-step "Leak check" [{:type "markdown" :text "214 words checked, no leak."}])))
+      (>= stage 5)
+      (assoc (step-path "pull-request" nil)
+             (write (tuning-step "Pull request"
+                                 [{:type "markdown" :text (str "[Pull request](" pr-url ") opened, ready for review.")}
+                                  {:type "table" :columns ["Remark" "Kind" "Rule" "Outcome" "Reason"]
+                                   :rows [["r1" "false_positive" "R-COLL-001" "applied" ""]]}
+                                  {:type "diff" :title "Change" :text rule-change}]))))))
+
+(defn tuning-status [state updated-ms links]
+  {:state state :updated_at (iso updated-ms) :error nil
+   :headline (if (= "done" state)
+               [{:label "applied" :value 1 :tone "green"} {:label "not applied" :value 0 :tone "neutral"}
+                {:label "not met" :value 0 :tone "neutral"} {:label "regressions" :value 0 :tone "neutral"}]
+               [])
+   :links links})
+
+(defn simulate-tuning
+  "A tuning launcher's `on-fire` for the demo: answers at once with a made-up
+  session, then writes the tuning's branch step by step through `write!`,
+  `step-ms` apart, and ends with a pull request on Owllie."
+  [{:keys [write! now-fn step-ms]}]
+  (fn [request-text]
+    (let [branch-name (request-value request-text "RUN_BRANCH")
+          run-id (second (re-matches #"tune/(.+)" (str branch-name)))
+          remarks (count (re-seq #"(?m)^REMARK=" request-text))
+          pr-url (str "https://github.com/" (:owner tuning-pull-request) "/" (:name tuning-pull-request)
+                      "/pull/" (:number tuning-pull-request))
+          step! (fn [stage state links]
+                  (Thread/sleep (long step-ms))
+                  (write! branch-name
+                          (assoc (tuning-files run-id remarks stage)
+                                 "owllie/status.json" (write (tuning-status state (now-fn) links)))))]
+      (Thread/startVirtualThread
+       (fn []
+         (try
+           (doseq [stage (range 0 5)] (step! stage "running" []))
+           (step! 5 "done" [{:label "Pull request" :url pr-url :kind "pull_request"}])
+           (catch InterruptedException _ nil))))
+      {:session-id (str "session_tune" (str/replace (str run-id) #"[^A-Za-z0-9]" ""))
        :session-url "https://claude.ai/code"})))

@@ -86,11 +86,33 @@
                            (owldesk/launch-outcome outcome)
                            (owldesk/body sys {:outcome outcome})]))))
 
-(defn review-page [sys review step]
-  (document (layout/page sys {:title (str "review " (:run-id review)) :section :owldesk}
-                         [:div {:data-on-load (str "@get('/sse/owldesk/review/" (:run-id review)
+(defn review-page
+  ([sys review step] (review-page sys review step nil))
+  ([sys review step outcome]
+   (document (layout/page sys {:title (str "review " (:run-id review)) :section :owldesk}
+                          [:div {:data-on-load (str "@get('/sse/owldesk/review/" (:run-id review)
+                                                    (when step (str "/" step)) "')")
+                                 :class "flex flex-col gap-4"}
+                           (owldesk/remarks-outcome outcome)
+                           (owldesk/review-page sys review {:step step})]))))
+
+(defn remark-form-page
+  "The page a remark is written or changed on: no event stream patches it,
+  so nothing the operator types is lost."
+  [sys review opts]
+  (document (layout/page sys {:title (str "remark on " (:run-id review)) :section :owldesk}
+                         (owldesk/remark-form-page sys review opts))))
+
+(defn tuning-page [sys tuning step]
+  (document (layout/page sys {:title (str "tuning " (:run-id tuning)) :section :owldesk}
+                         [:div {:data-on-load (str "@get('/sse/owldesk/tuning/" (:run-id tuning)
                                                    (when step (str "/" step)) "')")}
-                          (owldesk/review-page sys review {:step step})])))
+                          (owldesk/tuning-page sys tuning {:step step})])))
+
+(defn tuning-step?
+  "Whether `step` names a step of the tuning's process."
+  [tuning step]
+  (contains? (owldesk/step-ids tuning) step))
 
 (defn review-step?
   "Whether `step` names a step of the review's process."
@@ -121,6 +143,8 @@
 (defn owldesk-fragment [sys] (render (owldesk/body sys {})))
 (defn launch-outcome-fragment [outcome] (render (owldesk/launch-outcome outcome)))
 (defn review-fragment [sys review step] (render (owldesk/review-page sys review {:step step})))
+(defn remarks-outcome-fragment [outcome] (render (owldesk/remarks-outcome outcome)))
+(defn tuning-fragment [sys tuning step] (render (owldesk/tuning-page sys tuning {:step step})))
 (defn review-settings-fragment [sys outcome]
   (render (owldesk/settings-section sys {:outcome outcome})))
 

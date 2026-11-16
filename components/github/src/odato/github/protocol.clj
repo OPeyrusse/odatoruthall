@@ -14,4 +14,5 @@
   (-branches [this request])
   (-tree [this request])
   (-blob [this request])
-  (-delete-branch [this request]))
+  (-delete-branch [this request])
+  (-review-comments [this request]))

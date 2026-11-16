@@ -69,6 +69,25 @@
 (defn- verdict [s]
   (case (str s) "relevant" :relevant "false-positive" :false-positive nil))
 
+(defn- remark-target
+  "What a remark form is about, from its parameters: a finding, lines of the
+  diff, or the review as a whole."
+  [param]
+  (cond
+    (not (str/blank? (str (param "fingerprint")))) {:fingerprint (str (param "fingerprint"))}
+    (not (str/blank? (str (param "line")))) {:file (str (param "file")) :side (str (param "side"))
+                                            :line (str (param "line")) :end-line (str (param "end-line"))}
+    :else {:kind "general"}))
+
+(defn- remark-proposal [param]
+  (let [target (remark-target param)]
+    {:kind (param "kind")
+     :fingerprint (:fingerprint target)
+     :lines (when (:line target) (dissoc target :fingerprint :kind))
+     :note (param "note")
+     :proposed-severity (param "proposed-severity")
+     :rule (param "rule")}))
+
 (defn- day-or-nil [sys day-string]
   (when-let [starts-at (t/parse-day day-string)]
     (when (worklog/within-window? sys starts-at)
@@ -198,11 +217,133 @@
             (html (ui/pull-request-page sys pull-request))
             (not-found sys "No such pull request in the snapshot.")))
 
+        ;; -------------------------------------------- remarks for Owllie
+        ;; /owldesk/review/:run-id/remark?fingerprint=…|file=…&side=…&line=…|kind=general
+        (and (= :get request-method) (= 4 (count segments))
+             (= ["owldesk" "review"] (subvec segments 0 2)) (= "remark" (nth segments 3)))
+        (if-let [r (review/review sys (nth segments 2))]
+          (html (ui/remark-form-page sys r {:target (remark-target param)}))
+          (not-found sys "No such review."))
+
+        ;; /owldesk/review/:run-id/remarks
+        (and (= :post request-method) (= 4 (count segments))
+             (= ["owldesk" "review"] (subvec segments 0 2)) (= "remarks" (nth segments 3)))
+        (let [run-id (nth segments 2)
+              outcome (review/draft-remark! sys run-id (remark-proposal param))]
+          (if (:ok outcome)
+            {:status 303 :headers {"location" (str "/owldesk/review/" run-id "#remarks")} :body ""}
+            (if-let [r (review/review sys run-id)]
+              (html (ui/remark-form-page sys r {:target (remark-target param) :values @params
+                                                :fault (:fault outcome)}))
+              (not-found sys "No such review."))))
+
+        ;; /owldesk/review/:run-id/remarks/:id
+        (and (#{:get :post} request-method) (= 5 (count segments))
+             (= ["owldesk" "review"] (subvec segments 0 2)) (= "remarks" (nth segments 3)))
+        (let [[_ _ run-id _ id] segments
+              r (review/review sys run-id)
+              remark (review/remark sys id)]
+          (cond
+            (or (nil? r) (nil? remark) (not= run-id (:review-run-id remark)))
+            (not-found sys "No such remark on this review.")
+            (= :get request-method)
+            (html (ui/remark-form-page sys r {:remark remark}))
+            :else
+            (let [outcome (review/edit-remark! sys id {:note (param "note")
+                                                       :proposed-severity (param "proposed-severity")})]
+              (if (:ok outcome)
+                {:status 303 :headers {"location" (str "/owldesk/review/" run-id "#remarks")} :body ""}
+                (html (ui/remark-form-page sys r {:remark remark :values @params :fault (:fault outcome)}))))))
+
+        ;; /owldesk/review/:run-id/remarks/:id/delete and …/redraft
+        (and (= :post request-method) (= 6 (count segments))
+             (= ["owldesk" "review"] (subvec segments 0 2)) (= "remarks" (nth segments 3))
+             (#{"delete" "redraft"} (nth segments 5)))
+        (let [[_ _ run-id _ id action] segments
+              remark (review/remark sys id)]
+          (if (or (nil? remark) (not= run-id (:review-run-id remark)))
+            (not-found sys "No such remark on this review.")
+            (if (= "delete" action)
+              (do (review/delete-remark! sys id)
+                  (done request (str "/owldesk/review/" run-id "#remarks")))
+              (let [outcome (review/redraft-remark! sys id)]
+                (if (:ok outcome)
+                  {:status 303 :headers {"location" (str "/owldesk/review/" run-id "/remarks/" (:remark-id outcome))}
+                   :body ""}
+                  (not-found sys (str "The remark could not be copied: "
+                                      (str/replace (name (:fault outcome)) "-" " ") ".")))))))
+
+        ;; /owldesk/review/:run-id/send
+        (and (= :post request-method) (= 4 (count segments))
+             (= ["owldesk" "review"] (subvec segments 0 2)) (= "send" (nth segments 3)))
+        (let [run-id (nth segments 2)]
+          (if-let [r (review/review sys run-id)]
+            (let [outcome (review/send-remarks! sys run-id)]
+              (html-or-fragment request
+                                #(ui/remarks-outcome-fragment outcome)
+                                #(ui/review-page sys (review/review sys run-id) nil outcome)))
+            (not-found sys "No such review.")))
+
+        ;; /owldesk/review/:run-id/comments/:comment-id/draft and …/dismiss
+        (and (= :post request-method) (= 6 (count segments))
+             (= ["owldesk" "review"] (subvec segments 0 2)) (= "comments" (nth segments 3))
+             (#{"draft" "dismiss"} (nth segments 5)))
+        (let [[_ _ run-id _ comment-id action] segments]
+          (if (= "dismiss" action)
+            (do (review/dismiss-comment! sys run-id comment-id)
+                (done request (str "/owldesk/review/" run-id "#remarks")))
+            (let [outcome (review/draft-from-comment! sys run-id comment-id)]
+              (if (:ok outcome)
+                {:status 303 :headers {"location" (str "/owldesk/review/" run-id "/remarks/" (:remark-id outcome))}
+                 :body ""}
+                (not-found sys "That comment is no longer offered.")))))
+
+        ;; ---------------------------------------------------- tunings
+        ;; /owldesk/tuning/:run-id and /owldesk/tuning/:run-id/:step
+        (and (= :get request-method) (<= 3 (count segments) 4)
+             (= ["owldesk" "tuning"] (subvec segments 0 2)))
+        (let [step (get segments 3)]
+          (review/read-soon! sys)
+          (future (review/refresh-tuning-pull-requests! sys))
+          (if-let [tn (review/tuning sys (nth segments 2))]
+            (if (or (nil? step) (ui/tuning-step? tn step))
+              (html (ui/tuning-page sys tn step))
+              (not-found sys "No such step in this tuning."))
+            (not-found sys "No such tuning. Its branch may not be read yet, or it was removed.")))
+
+        ;; /sse/owldesk/tuning/:run-id[/:step]
+        (and (= :get request-method) (<= 4 (count segments) 5)
+             (= ["sse" "owldesk" "tuning"] (subvec segments 0 3)))
+        (let [run-id (nth segments 3)
+              step (get segments 4)]
+          (sse/stream sys request
+                      {:relevant? sse/owldesk-event?
+                       :fragment-fn (fn [sys]
+                                      (if-let [tn (review/tuning sys run-id)]
+                                        (ui/tuning-fragment sys tn step)
+                                        "<div id=\"owldesk-tuning\">This tuning is gone.</div>"))}))
+
+        ;; /owldesk/tuning/:run-id/remove
+        (and (= :post request-method) (= 4 (count segments))
+             (= ["owldesk" "tuning"] (subvec segments 0 2)) (= "remove" (nth segments 3)))
+        (let [tn (review/tuning sys (nth segments 2))
+              outcome (review/remove-tuning! sys (nth segments 2))]
+          (if (:ok outcome)
+            {:status 303
+             :headers {"location" (if-let [rid (:review-run-id tn)]
+                                    (str "/owldesk/review/" rid "#remarks")
+                                    "/owldesk")}
+             :body ""}
+            (not-found sys (str "The tuning could not be removed: "
+                                (str/replace (name (:fault outcome)) "-" " ") "."))))
+
         ;; /owldesk/review/:run-id and /owldesk/review/:run-id/:step
         (and (= :get request-method) (<= 3 (count segments) 4)
              (= ["owldesk" "review"] (subvec segments 0 2)))
         (let [step (get segments 3)]
           (review/read-soon! sys)
+          (when-let [r (review/review sys (nth segments 2))]
+            (review/read-comments-soon! sys r))
           (if-let [r (review/review sys (nth segments 2))]
             (if (or (nil? step) (ui/review-step? r step))
               (html (ui/review-page sys r step))

@@ -529,9 +529,10 @@ rule ResultsReadDue {
         ResultsReadRequested()
 
     @guidance
-        -- One request lists every results branch with the commit it points
-        -- at; only a branch whose commit moved is read again, so a quiet
-        -- results repository costs one request per reading. Nothing is read
+        -- One request per prefix lists the results branches -- reviews,
+        -- then tunings (tuning.allium) -- with the commit each points at;
+        -- only a branch whose commit moved is read again, so a quiet results
+        -- repository costs two requests per reading. Nothing is read
         -- while the GitHub budget is spent or while no results repository is
         -- set. Opening a review page also asks for a reading.
 }

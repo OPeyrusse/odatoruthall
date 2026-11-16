@@ -51,6 +51,8 @@
    :owllie {:fire-url (env "OWLLIE_FIRE_URL")
             :fire-token (env "OWLLIE_FIRE_TOKEN")
             :cli-dir (env "OWLLIE_CLI_DIR")
+            :tune-fire-url (env "OWLLIE_TUNE_FIRE_URL")
+            :tune-fire-token (env "OWLLIE_TUNE_FIRE_TOKEN")
             :claude-command (env "OWLLIE_CLAUDE_COMMAND" "claude")
             :results-token (env "OWLLIE_RESULTS_TOKEN")}})
 
@@ -79,12 +81,19 @@
   "The launchers that can start an Owllie session, and the client that may
   delete results branches: each is there only when its credential is."
   [settings]
-  (let [{:keys [fire-url fire-token cli-dir claude-command results-token]} (:owllie settings)]
+  (let [{:keys [fire-url fire-token tune-fire-url tune-fire-token cli-dir claude-command
+                results-token]} (:owllie settings)
+        cli (when cli-dir
+              (owllie/claude-cli {:dir cli-dir :command (str/split claude-command #"\s+")}))]
     {:launchers {:scheduled-task (when (and fire-url fire-token)
                                    (owllie/scheduled-task {:fire-url fire-url :token fire-token}))
-                 :claude-cli (when cli-dir
-                               (owllie/claude-cli {:dir cli-dir
-                                                   :command (str/split claude-command #"\s+")}))}
+                 :claude-cli cli}
+     ;; A tuning is its own scheduled task; the CLI asks for the skill the
+     ;; request names, so one clone serves both.
+     :tune-launchers {:scheduled-task (when (and tune-fire-url tune-fire-token)
+                                        (owllie/scheduled-task {:fire-url tune-fire-url
+                                                                :token tune-fire-token}))
+                      :claude-cli cli}
      :results-writer (when results-token
                        (github/client {:token results-token
                                        :base-url (:base-url (:github settings))}))}))
@@ -98,10 +107,17 @@
                       {:write! (fn [branch files]
                                  (github/mock-write-branch! gh demo/results-repository branch files))
                        :now-fn #(System/currentTimeMillis)
-                       :step-ms 4000}))]
+                       :step-ms 4000}))
+          tuning (owllie/mock-launcher
+                  (demo/simulated-tuning
+                   {:write! (fn [branch files]
+                              (github/mock-write-branch! gh demo/results-repository branch files))
+                    :now-fn #(System/currentTimeMillis)
+                    :step-ms 4000}))]
       {:github gh
        :jira (jira/mock-client (demo/jira-script now-ms))
        :launchers {:scheduled-task simulated :claude-cli simulated}
+       :tune-launchers {:scheduled-task tuning :claude-cli tuning}
        :results-writer gh})
     (merge {:github (github/client (:github settings))
             :jira (jira/client (:jira settings))}

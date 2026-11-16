@@ -43,7 +43,9 @@ leaves a badge saying so instead of breaking a dashboard.
 | `ODATO_DB_FILE` | Where the worklog is kept when Turso is not configured. Unset too, and the whole installation is in memory: the configuration and the worklog go with the process. | unset |
 | `OWLLIE_FIRE_URL` | owldesk: the Fire URL of the Claude scheduled task running Owllie (its API trigger). | unset |
 | `OWLLIE_FIRE_TOKEN` | owldesk: the token of that API trigger. | unset |
-| `OWLLIE_CLI_DIR` | owldesk, instead of the scheduled task: a clone of Owllie from which `claude --cloud` starts the session. The Claude CLI must be installed and signed in (`claude auth login`). | unset |
+| `OWLLIE_TUNE_FIRE_URL` | owldesk: the Fire URL of the Claude scheduled task running Owllie's tuning (`owllie-tune`), to which the remarks on a review are sent. | unset |
+| `OWLLIE_TUNE_FIRE_TOKEN` | owldesk: the token of that API trigger. | unset |
+| `OWLLIE_CLI_DIR` | owldesk, instead of the scheduled tasks: a clone of Owllie from which `claude --cloud` starts the session, for reviews and tunings alike. The Claude CLI must be installed and signed in (`claude auth login`). | unset |
 | `OWLLIE_CLAUDE_COMMAND` | The command that runs the Claude CLI. | `claude` |
 | `OWLLIE_RESULTS_TOKEN` | owldesk: a fine-grained token with *Contents* write on the results repository only, to delete old results branches. Without it, cleanup is off and `GITHUB_TOKEN` stays read-only. | unset |
 | `ODATO_DEMO` | `1` runs against scripted data: no credential is used and no request leaves the process. | `false` |
@@ -89,9 +91,26 @@ described in Owllie's README. Here:
    pull request in gitdesk.
 
 The results branches are read every minute while a review is in flight and
-every ten minutes otherwise; a quiet results repository costs one GitHub
-request per reading. What you mark on findings is kept in the installation's
-store, and survives the branches being cleaned up.
+every ten minutes otherwise; a quiet results repository costs two GitHub
+requests per reading (review branches, tuning branches). What you mark on
+findings is kept in the installation's store, and survives the branches being
+cleaned up.
+
+### Tuning Owllie from your reviews
+
+Each review has a **Remarks for Owllie** section: remarks on a finding (false
+positive, relevant, wrong severity, unclear), on lines of the diff the review
+should have flagged (a line number in the *Inputs* step starts one), or on the
+review as a whole. Reviewers' comments on the pull request that fall where the
+review found nothing are offered as candidate misses. Remarks stay drafts —
+changed or deleted on their own page — until you send them, all at once: Owllie
+anonymizes the code, writes evaluation cases and rule changes, and opens one
+pull request on its own repository, which owldesk follows and links to. You
+read and merge it on GitHub.
+
+This needs Owllie's second scheduled task, `owllie-tune` (see Owllie's
+`shared/tune-layout.md`), given to the process as `OWLLIE_TUNE_FIRE_URL` and
+`OWLLIE_TUNE_FIRE_TOKEN`; with `OWLLIE_CLI_DIR`, the same clone serves both.
 
 ## Running it
 
@@ -229,7 +248,7 @@ The variables of [Credentials](#credentials) that are not secrets are options of
 systemd specifiers are expanded in them (`%h`, `%S`, …).
 
 The secrets — `GITHUB_TOKEN`, `JIRA_TOKEN`, `TURSO_TOKEN`, `OWLLIE_FIRE_TOKEN`,
-`OWLLIE_RESULTS_TOKEN` — go in the files of `environmentFiles`, read by systemd
+`OWLLIE_TUNE_FIRE_TOKEN`, `OWLLIE_RESULTS_TOKEN` — go in the files of `environmentFiles`, read by systemd
 when the service starts, as `NAME=value` lines like `.env`. Whatever manages the
 secrets writes them: by default `~/.config/odatoruthall/env`, which may be
 missing (the leading `-`); `%t/…` puts one in the runtime directory instead.
@@ -290,7 +309,7 @@ Polylith, laid out one component per specification slice. It is plain
 | `components/worklog` | days, entries, and what it means for time to reach Jira | `worklog/worklog` |
 | `components/discovery` | the day scan, attribution, and the orphans it keeps | `worklog/discovery` |
 | `components/owllie` | Owllie seen from here: the request format, branch names, and the launchers (scheduled task, CLI, mock) | — |
-| `components/review` | review settings, launches, reading results branches, judgements of findings, cleanup | `owldesk/review` |
+| `components/review` | review settings, launches, reading results branches, judgements of findings, cleanup; remarks for Owllie, batches, tunings, the review's diff, reviewers' comments | `owldesk/review`, `owldesk/tuning` |
 | `components/ui` | every page and fragment | `gitdesk/dashboard`, `worklog/timesheet`, `owldesk/owldesk`, `shared/shell` |
 | `bases/server` | the routes, the event stream, the process | — |
 | `projects/server` | the one deployable artefact | — |
