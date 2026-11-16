@@ -187,10 +187,17 @@
          (list "scanned " (parts/relative-time now-ms (:last-scanned-at day)))
          "never scanned")]]]))
 
+(def ^:private ticket-heading-class
+  "A ticket's title row: shaded and closed off from its day cells by a rule,
+  and set apart from the ticket above by a heavier one."
+  (str "col-span-5 flex min-w-0 items-baseline gap-2 px-3 py-1.5 text-sm "
+       "border-t-2 border-t-slate-300 dark:border-t-slate-700 "
+       "border-b border-b-slate-200 dark:border-b-slate-800 "
+       "bg-slate-100/70 dark:bg-slate-800/50"))
+
 (defn- ticket-heading [row]
   (let [k (:work-item-key row)]
-    [:div {:class (str "col-span-5 flex min-w-0 items-baseline gap-2 border-t "
-                       "border-slate-200 px-3 pt-2 text-sm dark:border-slate-800")}
+    [:div {:class ticket-heading-class}
      (if-let [url (get-in row [:work-item :url])]
        [:a {:href url :target "_blank" :rel "noreferrer"
             :class "shrink-0 font-semibold hover:underline"}
