@@ -2,11 +2,14 @@
 --
 -- owldesk — what the operator sees of the reviews: every review asked for,
 -- grouped by pull request; one review in full, while it runs and once it is
--- done; and the review settings, with the cleanup of old results.
+-- done, with the remarks the operator writes on it for Owllie; one tuning in
+-- full, from the remarks sent to the pull request on Owllie's rules; and the
+-- review settings, with the cleanup of old results.
 
 use "../shared/access.allium" as access
 use "../shared/config.allium" as settings
 use "./review.allium" as review
+use "./tuning.allium" as tuning
 
 ------------------------------------------------------------
 -- Surfaces
@@ -73,6 +76,9 @@ surface ReviewPage {
 
     let others = review/Reviews where pull_request = subject.pull_request
     let judged = review/FindingFeedbacks where run_id = subject.run_id
+    let remarks = tuning/TuningRemarks where review_run_id = subject.run_id
+    let drafts = tuning/TuningRemarks where review_run_id = subject.run_id and status = draft
+    let tunings = tuning/Tunings where review_run_id = subject.run_id
 
     exposes:
         operator.account_login
@@ -100,15 +106,52 @@ surface ReviewPage {
         for each in judged:
             each.fingerprint
             each.verdict
+        subject.run.head_sha
+        drafts.count
+        for each in remarks:
+            each.id
+            each.kind
+            each.finding
+            each.lines
+            each.excerpt
+            each.rule
+            each.note
+            each.proposed_severity
+            each.status
+            each.batch
+            each.updated_at
+        for each in tunings:
+            each.run_id
+            each.launch.fired_at
+            each.launch.status
+            each.launch.refusal
+            each.run.state
+            each.run.pull_request_url
+            each.run.pull_request_state
+            each.is_starting
+            each.is_running
+            each.is_stalled
+            each.is_failed
+            each.never_started
+            each.is_given_up
 
     provides:
         for fingerprint in findings_of(subject):
             OperatorJudgesFinding(subject, fingerprint, review/FindingVerdict)
             OperatorWithdrawsJudgement(subject, fingerprint)
+        tuning/OperatorDraftsRemark(subject, tuning/RemarkKind, String?, tuning/CodeLines?,
+            String, tuning/RemarkSeverity?, String?)
+        for each in drafts:
+            tuning/OperatorEditsRemark(each, String, tuning/RemarkSeverity?)
+            tuning/OperatorDeletesRemark(each)
+        for each in remarks where status = sent:
+            tuning/OperatorRedraftsRemark(each)
+        tuning/OperatorSendsRemarks(subject)
         OperatorRemovesReview(subject)
 
     related:
         ReviewPage(others)
+        TuningPage(tunings)
 
     @guarantee ProgressWhileRunning
         -- While the review runs, the page shows its process as the branch
@@ -118,7 +161,7 @@ surface ReviewPage {
 
     @guarantee OneViewPerStep
         -- Each step has its own view: what it says about itself, then its
-        -- blocks in order -- text, code, figures, tables, findings -- or its
+        -- blocks in order -- text, code, diffs, figures, tables, findings -- or its
         -- markdown. The summary step, when the process names one, is the
         -- view the page opens on once it is there. Each finding says its
         -- severity, where it is, the code it quotes, what it observes, and
@@ -130,11 +173,104 @@ surface ReviewPage {
         -- positive, and the mark can be withdrawn. The mark is kept here,
         -- not on the branch, and survives the branch's deletion.
 
+    @guarantee CodeIsShownAsTheRunSawIt
+        -- The diff the review read is shown file by file, each line with its
+        -- number on the new side, added and removed lines told apart. A
+        -- finding shows the lines around it from that diff, its own lines
+        -- marked, or its quote alone when they are not in the diff. The code
+        -- is shown as text, never interpreted.
+
+    @guarantee RemarksStartWhereTheCodeIs
+        -- Every finding a step shows offers a remark on it, of any finding
+        -- kind; every line, or run of lines, on the new side of the diff
+        -- offers a missed remark; and the remarks section offers a general
+        -- remark. A false positive or relevant remark marks the finding
+        -- that way at the same time.
+
+    @guarantee RemarksAreGatheredThenSent
+        -- The review has a section of its own for its remarks: every draft,
+        -- with its kind, its rule, its code and its note, which can be
+        -- changed or deleted until it is sent; the batches already sent,
+        -- each with where its tuning stands and its pull request; and one
+        -- action that sends every draft at once. When a batch cannot be
+        -- sent, the section says why before the operator asks, and the
+        -- drafts stay. A remark of a batch that was given up can be copied
+        -- into a new draft.
+
     @guarantee FailuresAreExplained
         -- A failed run says the code and message it recorded; a stalled run
         -- says how long its branch has been silent; a review that never
         -- started says why when the launcher said, and leads to the session
         -- when there is one.
+}
+
+surface TuningPage {
+    -- One tuning in full: the remarks it was sent, where its run stands, one
+    -- view per step of its run, and its pull request on Owllie's rules.
+    facing operator: access/Operator
+
+    context subject: tuning/Tuning
+
+    let reviewed = review/Reviews where run_id = subject.review_run_id
+
+    exposes:
+        operator.account_login
+        subject.run_id
+        subject.review_run_id
+        subject.launch.pull_request
+        subject.launch.head_sha
+        subject.launch.brain_ref
+        subject.launch.fired_at
+        subject.launch.status
+        subject.launch.refusal
+        subject.launch.session_url
+        for each in subject.launch.remarks:
+            each.id
+            each.kind
+            each.rule
+            each.note
+        subject.run.branch
+        subject.run.state
+        subject.run.updated_at
+        subject.run.failure
+        subject.run.summary_step
+        for step in subject.run.steps:
+            step.phase
+            step.id
+            step.title
+            step.state
+        subject.run.pull_request_url
+        subject.run.pull_request_state
+        subject.run.pull_request_is_draft
+        subject.run.pull_request_mergeable
+        subject.run.pull_request_checks_failing
+        subject.is_starting
+        subject.is_running
+        subject.is_stalled
+        subject.is_done
+        subject.is_failed
+        subject.never_started
+        subject.is_open
+        subject.is_merged
+
+    provides:
+        tuning/OperatorMergesTuning(subject)
+        tuning/OperatorRemovesTuning(subject)
+
+    related:
+        ReviewPage(reviewed)
+
+    @guarantee ReadLikeAReview
+        -- The run's process, its steps and their blocks are shown the way a
+        -- review's are, the summary step first: the remarks with what became
+        -- of each, the cases written, the rule changes as diffs, the
+        -- measures before and after.
+
+    @guarantee MergeWhenReady
+        -- The pull request is linked, with its state, whether it is a draft,
+        -- whether it can be merged and whether its checks fail. The merge
+        -- action is offered when the merge credential is there; when the
+        -- pull request cannot be merged, the page says why instead.
 }
 
 surface ReviewSettingsPanel {
@@ -172,9 +308,10 @@ surface ReviewSettingsPanel {
         OperatorConfirmsCleanup()
 
     @guarantee CredentialsAreNeverSettings
-        -- The launcher's own credentials, and the credential that may delete
-        -- branches, come with the process, like the GitHub and Jira ones.
-        -- The panel says whether each is there, never what it is.
+        -- The launcher's own credentials, for reviews and for tunings, the
+        -- credential that may delete branches, and the one that may merge a
+        -- tuning's pull request come with the process, like the GitHub and
+        -- Jira ones. The panel says whether each is there, never what it is.
 
     @guarantee CleanupIsPreviewed
         -- The branches a cleanup would delete are listed before the operator

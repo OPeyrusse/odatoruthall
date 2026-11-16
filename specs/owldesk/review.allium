@@ -25,6 +25,8 @@
 -- has not started yet from one that never will. It also keeps what the
 -- operator thinks of the findings, so that the rules Owllie applies can be
 -- tuned from it, and that judgement outlives the branches it was made on.
+-- The remarks the operator sends Owllie to tune its rules are in
+-- tuning.allium.
 --
 -- Three promises hold:
 --
@@ -141,6 +143,8 @@ external entity ResultsBranch {
     head: String                    -- the commit the branch points at
     run_id: String
     pull_request: PullRequestReference
+    head_sha: String?               -- the reviewed commit, when the process
+                                    -- names it
     state: RunState?                -- null when the status cannot be read
     updated_at: Timestamp?          -- the heartbeat of the status
     failure: RunFailure?
@@ -227,6 +231,7 @@ entity ReviewRun {
     branch: String
     head: String
     pull_request: PullRequestReference
+    head_sha: String?               -- the commit the review read
     state: RunState?
     updated_at: Timestamp?
     failure: RunFailure?
@@ -537,6 +542,7 @@ rule ResultsBranchRead {
     ensures:
         if exists known:
             known.head = branch.head
+            known.head_sha = branch.head_sha
             known.state = branch.state
             known.updated_at = branch.updated_at
             known.failure = branch.failure
@@ -548,6 +554,7 @@ rule ResultsBranchRead {
                 branch: branch.name,
                 head: branch.head,
                 pull_request: branch.pull_request,
+                head_sha: branch.head_sha,
                 state: branch.state,
                 updated_at: branch.updated_at,
                 failure: branch.failure,
@@ -568,7 +575,10 @@ rule StepStatesAreReadFromTheirFiles {
         -- never seen half written, but a reader does not judge a run in
         -- flight on one file. Once the run has ended, a step without a file
         -- was not run, and one whose file cannot be read is unreadable.
-        -- Fields a block carries that are not known here are ignored, and a
+        -- A diff block is shown file by file, each line with its number on
+        -- the new side; it is what the code of a finding or of a remark is
+        -- read from (see tuning.allium). Fields a block carries that are not
+        -- known here are ignored, and a
         -- block of a type not known here is shown as such, with what it
         -- holds; a process of another major schema version is shown with a
         -- warning.
