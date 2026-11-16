@@ -13,7 +13,12 @@
 -- the text the operator typed, the total it adds up to, and whether Jira has
 -- it yet.
 --
--- A day reads as one row per task, in ticket order. Under a task sit the
+-- The timesheet reads as one row per ticket worked in the window, across all
+-- five days: the ticket once, with room for its title, and under it what each
+-- day holds of it. The tickets the operator named themselves come first; the
+-- others follow, the one last touched first.
+--
+-- One day reads as one row per task, in ticket order. Under a task sit the
 -- lines that led to it: the pull requests, the reviews, the comments, the
 -- issues touched that day.
 -- Several lines under one task is the normal case -- two pull requests on the
@@ -34,8 +39,9 @@ use "./discovery.allium" as discovery
 ------------------------------------------------------------
 
 surface Timesheet {
-    -- The five days, side by side: the total on each, and the tasks that make
-    -- it up.
+    -- The five days as columns, and the tickets worked in them as rows that
+    -- span all five: the total on each day, what can be done to it, and what
+    -- each ticket holds on each day.
     facing operator: access/Operator
 
     let days = by_day(worklog/WorkDays
@@ -44,6 +50,8 @@ surface Timesheet {
     let week_total = total_duration(days -> total_logged)
     let lines = discovery/DiscoveredActivities
         where within_timesheet_window(day.starts_at, now, worklog/config.timesheet_days)
+    let entries = days -> entries
+    let tickets = by_last_interaction(entries -> work_item, entries, lines)
 
     exposes:
         operator.account_login
@@ -53,7 +61,6 @@ surface Timesheet {
         for day in days:
             day.starts_at
             day.total_logged
-            day.entries.count
             day.has_time_to_submit
             day.is_in_flight
             day.is_settled
@@ -61,21 +68,25 @@ surface Timesheet {
             day.last_scanned_at
             (discovery/DayScans where day = day and status = running).count
             day.busy_with
-            -- One row per task, and one time field on it, whatever the day
-            -- turned up under it.
-            for entry in by_task(day.entries):
-                entry.work_item.key
-                entry.work_item.facts.summary
+            orphan_lines(lines, day).count
+        -- One row per ticket, whatever number of days it was worked on, and
+        -- under it one cell per day: what the ticket holds there, or nothing.
+        for ticket in tickets:
+            ticket.key
+            ticket.facts.summary
+            ticket.facts.url
+            last_interaction(ticket, lines)
+            for entry in entries where work_item = ticket:
+                entry.day.starts_at
                 entry.entered_text
                 entry.duration
                 entry.status
                 entry.origin
                 entry.is_filled
                 entry.jira_logged
+                entry.jira_worklogs
                 entry.differs_from_jira
                 entry.last_failure
-                lines_for(lines, day, entry.work_item.key).count
-            orphan_lines(lines, day).count
 
     provides:
         OperatorOpensTimesheet()
@@ -91,6 +102,28 @@ surface Timesheet {
     related:
         for day in days:
             DaySheet(day)
+
+    @guarantee EachDayKeepsItsCommands
+        -- Under each day's heading sit that day's own commands -- scan it,
+        -- submit it -- with whether it is settled, how many of its lines
+        -- belong to no task, and when it was last scanned.
+
+    @guarantee OneRowPerTicket
+        -- A ticket worked on several days of the window is one row, not one
+        -- per day: its key and title once, across the width of the five days,
+        -- and under it the time, and where that time stands with Jira, on
+        -- each day that carries it. A day that does not carry it is empty.
+
+    @guarantee TicketsReadByLastInteraction
+        -- The tickets the operator named themselves -- every entry they have
+        -- in the window added by the operator -- come first, in ticket order.
+        -- The others follow, the most recently touched first: a ticket's last
+        -- interaction is the latest moment of a line under it in the window,
+        -- a commit, a pull request, a review, a comment, an issue touched.
+        -- Logging time is not an interaction: neither a worklog in Jira nor
+        -- time typed here moves a ticket up. Tickets touched at the same
+        -- moment, or with no line at all, read in ticket order, the latter
+        -- last.
 
     @guarantee FiveWorkingDaysAlwaysShow
         -- The window is the last five working days, Monday to Friday in UTC,
@@ -273,3 +306,9 @@ surface WorklogPersistence {
         -- are still there tomorrow, and scanning it again adds what has
         -- happened since.
 }
+
+------------------------------------------------------------
+-- Open questions
+------------------------------------------------------------
+
+open question "Should time be typed straight into the timesheet's cells, rather than on the day's own page?"

@@ -1,6 +1,8 @@
 (ns odato.ui.worklog
   "The timesheet — five working days at a time, what each adds up to, and what
-  it is made of.
+  it is made of. The days are columns; each ticket worked in them is one row
+  across all five, the ones the operator named first, then the most recently
+  touched.
 
   A day reads as one row per task. Under a task sit the lines that led to it:
   the pull requests, the reviews, the comments, the issues touched that day.
@@ -109,56 +111,131 @@
 
 ;; ------------------------------------------------------------- the five days
 
-(def ^:private day-actions
-  (str "flex flex-wrap items-center gap-2 border-t border-slate-200 px-4 py-2 "
-       "dark:border-slate-800"))
+;; The five days are columns, and the tickets worked in them are rows that span
+;; all five: a ticket is read once, with room for its title, and under it what
+;; each day holds of it.
 
-(defn- day-card [sys now-ms day]
-  (let [today? (= (t/utc-midnight-of now-ms) (:starts-at day))
-        orphans (discovery/orphans-on sys (:starts-at day))
-        scanning (discovery/active-scan sys (:starts-at day))]
-    [:section {:class (str parts/card (when today? " ring-2 ring-sky-500/40"))}
-     [:div {:class parts/card-heading}
-      [:div
-       [:a {:href (day-href day) :class "text-sm font-semibold hover:underline"}
-        (t/day-label (:starts-at day))]
-       [:div {:class parts/faint} (t/format-day (:starts-at day))]]
-      [:div {:class "text-right"}
-       [:div {:class "text-lg font-semibold tabular-nums"}
-        (t/format-duration (:total-logged day))]
-       (when (:is-settled day) (parts/chip "settled" :green))]]
-     (if (seq (:entries day))
-       [:ul {:class "divide-y divide-slate-200 text-sm dark:divide-slate-800"}
-        (for [entry (:entries day)]
-          [:li {:class "flex items-center justify-between gap-2 px-4 py-2"}
-           [:div {:class "min-w-0"}
-            [:div {:class (str "font-medium" (when scanning (str " " in-flight-text)))}
-             (:work-item-key entry)]
-            [:div {:class (str parts/muted " truncate")}
-             (get-in entry [:work-item :summary])]]
-           [:div {:class "flex shrink-0 items-center gap-2"}
-            [:span {:class (str "tabular-nums" (when scanning (str " " in-flight-text)))}
-             (or (:entered-text entry) "—")]
-            (status-chip entry)]])]
-       (parts/empty-state (if (:has-been-scanned day)
-                            "Scanned, and nothing was found."
-                            "Nothing on this day yet.")))
-     [:div {:class day-actions}
+(defn last-interactions
+  "The latest moment of a line under each ticket, across `activities`. Logging
+  time is not an interaction, and is not a line: worklogs move nothing here."
+  [activities]
+  (reduce (fn [acc {:keys [attributed-keys happened-at]}]
+            (if happened-at
+              (reduce #(update %1 %2 (fnil max happened-at) happened-at)
+                      acc attributed-keys)
+              acc))
+          {}
+          activities))
+
+(defn ticket-rows
+  "One row per ticket the days carry: the ticket, whether the operator named it
+  themselves on every day it is on, its last interaction, and its entry on each
+  day, keyed by the day's start.
+
+  The tickets the operator named come first, in ticket order; the others
+  follow, the most recently touched first, then in ticket order; a ticket no
+  line dates reads last."
+  [days last-interaction]
+  (->> (mapcat :entries days)
+       (group-by :work-item-key)
+       (map (fn [[k entries]]
+              {:work-item-key k
+               :work-item (:work-item (first entries))
+               :named? (every? #(= :added-by-operator (:origin %)) entries)
+               :last-interaction-at (get last-interaction k)
+               :entries (into {} (map (juxt :day-starts-at identity)) entries)}))
+       (sort-by (fn [{:keys [work-item-key named? last-interaction-at]}]
+                  [(cond named? 0 last-interaction-at 1 :else 2)
+                   (if (and (not named?) last-interaction-at) (- last-interaction-at) 0)
+                   (worklog/key-order work-item-key)]))
+       vec))
+
+(defn- cell-class
+  "A cell of the grid: a rule between the days, and today a shade apart."
+  [index today?]
+  (str "min-w-0 px-3 py-2"
+       (when (pos? index) " border-l border-slate-200 dark:border-slate-800")
+       (when today? " bg-sky-50/60 dark:bg-sky-950/30")))
+
+(defn- day-heading [today? index day]
+  [:div {:class (str (cell-class index today?)
+                     " flex items-start justify-between gap-2 py-3")}
+   [:div {:class "min-w-0"}
+    [:a {:href (day-href day) :class "text-sm font-semibold hover:underline"}
+     (t/day-label (:starts-at day))]
+    [:div {:class parts/faint} (t/format-day (:starts-at day))]]
+   [:div {:class "text-lg font-semibold tabular-nums"}
+    (t/format-duration (:total-logged day))]])
+
+(defn- day-commands
+  "The cell under a day's heading: what can be done to that day, and where it
+  stands."
+  [sys now-ms today? index day]
+  (let [orphans (discovery/orphans-on sys (:starts-at day))]
+    [:div {:class (str (cell-class index today?)
+                       " flex flex-col items-start gap-2 border-t border-slate-200 "
+                       "dark:border-slate-800")}
+     [:div {:class "flex flex-wrap gap-2"}
       (scan-button day "Scan")
-      (submit-button day)
+      (submit-button day)]
+     [:div {:class "flex flex-wrap items-center gap-1.5"}
+      (when (:is-settled day) (parts/chip "settled" :green))
       (when (pos? (count orphans))
         [:a {:href (day-href day)} (parts/chip (str (count orphans) " loose") :amber)])
-      (when (:has-been-scanned day)
-        [:span {:class parts/faint}
-         (list "scanned " (parts/relative-time now-ms (:last-scanned-at day)))])]]))
+      [:span {:class parts/faint}
+       (if (:has-been-scanned day)
+         (list "scanned " (parts/relative-time now-ms (:last-scanned-at day)))
+         "never scanned")]]]))
+
+(def ^:private ticket-heading-class
+  "A ticket's title row: shaded and closed off from its day cells by a rule,
+  and set apart from the ticket above by a heavier one."
+  (str "col-span-5 flex min-w-0 items-baseline gap-2 px-3 py-1.5 text-sm "
+       "border-t-2 border-t-slate-300 dark:border-t-slate-700 "
+       "border-b border-b-slate-200 dark:border-b-slate-800 "
+       "bg-slate-100/70 dark:bg-slate-800/50"))
+
+(defn- ticket-heading [row]
+  (let [k (:work-item-key row)]
+    [:div {:class ticket-heading-class}
+     (if-let [url (get-in row [:work-item :url])]
+       [:a {:href url :target "_blank" :rel "noreferrer"
+            :class "shrink-0 font-semibold hover:underline"}
+        k]
+       [:span {:class "shrink-0 font-semibold"} k])
+     [:span {:class (str parts/muted " min-w-0 truncate")}
+      (get-in row [:work-item :summary])]]))
+
+(defn- ticket-cell
+  "What one ticket holds on one day: its time and where that time stands with
+  Jira, or nothing when the day does not carry it."
+  [today? scanning? index day entry]
+  [:div {:class (str (cell-class index today?) " flex flex-wrap items-center gap-1.5 text-sm")}
+   (when entry
+     (list
+      [:a {:href (day-href day)
+           :class (str "font-medium tabular-nums hover:underline"
+                       (when scanning? (str " " in-flight-text)))}
+       (or (:entered-text entry) "—")]
+      (status-chip entry)
+      (when (:differs-from-jira? entry)
+        [:span {:class "text-xs text-amber-700 dark:text-amber-400"
+                :title (str "Submitting the day sends "
+                            (t/format-duration (:duration-ms entry)) " instead.")}
+         (str "Jira holds " (t/format-duration (:jira-logged-ms entry)))])))])
 
 (defn body
   "The fragment SSE patches in place while a day scan runs."
   [sys]
   (let [now-ms (t/now-ms (:clock sys))
+        today (t/utc-midnight-of now-ms)
         days (worklog/window sys)
         week-total (reduce + 0 (map :total-logged days))
-        scanning (discovery/active-scans sys)]
+        scanning (discovery/active-scans sys)
+        scanned-days (set (map :day-starts-at scanning))
+        rows (ticket-rows days (last-interactions
+                                (mapcat #(discovery/activities-on sys (:starts-at %)) days)))
+        indexed (map-indexed vector days)]
     [:div {:id "worklog" :class "flex flex-col gap-4"}
      [:section {:class parts/card}
       [:div {:class "flex flex-wrap items-center justify-between gap-3 px-4 py-3"}
@@ -185,8 +262,23 @@
            [:a {:href (str "/worklog/" (t/format-day (:day-starts-at scan)))
                 :class "hover:opacity-80"}
             (scan-chip (t/day-label (:day-starts-at scan)) scan)])])]
-     [:div {:class "grid gap-4 md:grid-cols-2 xl:grid-cols-5"}
-      (map #(day-card sys now-ms %) days)]]))
+     [:section {:class (str parts/card " overflow-x-auto")}
+      [:div {:class "grid min-w-[48rem] grid-cols-5"}
+       (for [[i day] indexed]
+         (day-heading (= today (:starts-at day)) i day))
+       (for [[i day] indexed]
+         (day-commands sys now-ms (= today (:starts-at day)) i day))
+       (if (seq rows)
+         (for [row rows]
+           (list
+            (ticket-heading row)
+            (for [[i day] indexed]
+              (ticket-cell (= today (:starts-at day))
+                           (contains? scanned-days (:starts-at day))
+                           i day
+                           (get-in row [:entries (:starts-at day)])))))
+         [:div {:class "col-span-5 border-t border-slate-200 dark:border-slate-800"}
+          (parts/empty-state "Nothing on these days yet. Name a task on a day, or scan it.")])]]]))
 
 ;; ------------------------------------------------------------------ one day
 

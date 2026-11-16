@@ -123,7 +123,7 @@
            first
            ->entry))
 
-(defn- key-order
+(defn key-order
   "Sorts a key by its project, then by its number as a number: PIVOT-2 comes
   before PIVOT-10. A key without a number falls back to its text."
   [k]

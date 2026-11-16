@@ -50,6 +50,12 @@
 
 (defn week-total [sys] (core/week-total sys))
 
+(defn key-order
+  "Ticket order, as a sort key: by project, then by ticket number taken as a
+  number — PIVOT-2 before PIVOT-10."
+  [issue-key]
+  (core/key-order issue-key))
+
 (defn within-window? [sys day-starts-at] (core/within-window? sys day-starts-at))
 
 (defn ensure-day!
