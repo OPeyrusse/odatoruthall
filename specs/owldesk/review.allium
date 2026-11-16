@@ -243,6 +243,7 @@ entity Review {
     run: ReviewRun?
 
     pull_request: PullRequestReference
+    asked_at: Timestamp             -- the minute its run id names
 
     is_done: run != null and run.state = done
     is_failed: run != null and run.state = failed
@@ -404,6 +405,17 @@ rule ResultsRepositoryChecked {
 rule OperatorLaunchesReview {
     when: OperatorRequestsReview(url, brain_ref)
     ensures: LaunchRequested(url: url, brain_ref: brain_ref)
+}
+
+rule OperatorReviewsAgain {
+    when: OperatorRequestsAnotherReview(review, brain_ref)
+    ensures: LaunchRequested(url: pull_request_url(review.pull_request), brain_ref: brain_ref)
+
+    @guidance
+        -- Another run of the pull request a review is of, asked for from that
+        -- review. It is checked and refused like any other launch -- above
+        -- all while a run of the same pull request is in flight. Each run
+        -- has its own branch: a new one replaces none of the earlier ones.
 }
 
 rule LaunchStarts {

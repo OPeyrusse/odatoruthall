@@ -110,6 +110,25 @@
       (t/advance! (:clock sys) (t/minutes 6))
       (is (= :never-started (:state (review/review sys (:run-id outcome))))))))
 
+(deftest another-run-of-a-reviewed-pull-request
+  (let [sys (system)
+        first-run (:run-id (review/launch! sys {:url url}))]
+    (testing "refused like any other while one is in flight"
+      (is (= :already-reviewing (:refusal (review/launch-again! sys first-run nil)))))
+    (t/advance! (:clock sys) (t/minutes 6))
+    (testing "once none is, the same pull request is reviewed again, with the brain ref given"
+      (let [outcome (review/launch-again! sys first-run "rules-v2")
+            again (review/review sys (:run-id outcome))]
+        (is (:ok outcome))
+        (is (not= first-run (:run-id outcome)))
+        (is (= (:pull-request (review/review sys first-run)) (:pull-request again)))
+        (is (= "rules-v2" (get-in again [:launch :brain-ref])))
+        (is (= [(:run-id outcome) first-run]
+               (map :run-id (:reviews (first (review/by-pull-request sys)))))
+            "the latest run first")))
+    (testing "a review that is gone cannot be run again"
+      (is (= :no-such-review (:refusal (review/launch-again! sys "20200101T0000Z-0000" nil)))))))
+
 (deftest a-launcher-refusal-is-kept
   (let [sys (system {:answer {:failure "the scheduled task answered 401"}})
         {:keys [run-id]} (review/launch! sys {:url url})

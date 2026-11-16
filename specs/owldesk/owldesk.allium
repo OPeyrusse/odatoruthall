@@ -1,8 +1,9 @@
 -- allium: 3
 --
--- owldesk — what the operator sees of the reviews: every review asked for,
--- grouped by pull request; one review in full, while it runs and once it is
--- done; and the review settings, with the cleanup of old results.
+-- owldesk — what the operator sees of the reviews: every pull request
+-- reviewed, with its latest run and how many it had; one run in full, while
+-- it runs and once it is done, among the runs of its pull request; and the
+-- review settings, with the cleanup of old results.
 
 use "../shared/access.allium" as access
 use "../shared/config.allium" as settings
@@ -50,9 +51,11 @@ surface Reviews {
         ReviewSettingsPanel
 
     @guarantee GroupedByPullRequest
-        -- Reviews are listed by repository, then by pull request, the most
-        -- recent review first; each pull request says how many reviews it
-        -- had and what the latest found, in the headline the run wrote.
+        -- Reviews are listed by repository, then by pull request, one line
+        -- per pull request: how many runs it had, and its most recent run --
+        -- where it stands and what it found, in the headline the run wrote.
+        -- The earlier runs are not listed here; they are chosen from the
+        -- review page, which the line opens on the most recent run.
 
     @guarantee WhatPreventsALaunchIsSaid
         -- When a review cannot be asked for -- no results repository, one not
@@ -77,6 +80,7 @@ surface ReviewPage {
     exposes:
         operator.account_login
         subject.run_id
+        subject.asked_at
         subject.pull_request
         subject.launch.session_url
         subject.launch.brain_ref
@@ -97,6 +101,17 @@ surface ReviewPage {
         subject.is_failed
         subject.never_started
         others.count
+        for each in others:
+            each.run_id
+            each.asked_at
+            each.run.state
+            each.run.updated_at
+            each.is_starting
+            each.is_running
+            each.is_stalled
+            each.is_done
+            each.is_failed
+            each.never_started
         for each in judged:
             each.fingerprint
             each.verdict
@@ -106,9 +121,24 @@ surface ReviewPage {
             OperatorJudgesFinding(subject, fingerprint, review/FindingVerdict)
             OperatorWithdrawsJudgement(subject, fingerprint)
         OperatorRemovesReview(subject)
+        OperatorRequestsAnotherReview(subject, String?)
 
     related:
         ReviewPage(others)
+
+    @guarantee OneRunAmongItsPullRequests
+        -- The page says when its run was asked for and, once the run has
+        -- ended, when it ended. It offers every run of the same pull request,
+        -- the most recent first and marked as such, each with when it was
+        -- asked for, where it stands and what it found; choosing one shows
+        -- it.
+
+    @guarantee AnotherRunCanBeAskedFor
+        -- The page asks for another run of its pull request, with the brain
+        -- ref of the settings unless another is given. While a run of that
+        -- pull request is in flight, or while nothing could launch one, the
+        -- page says so before the operator asks; a refused run says why, and
+        -- a run asked for opens its own page.
 
     @guarantee ProgressWhileRunning
         -- While the review runs, the page shows its process as the branch
