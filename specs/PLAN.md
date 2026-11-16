@@ -339,8 +339,9 @@ These settle worklog:
 - **A tuning is read like a review**, from its own branch `tune/<run id>` of
   the results repository, with the same reader. The branch names the pull
   request; the pull request is then read until it is merged or closed.
-- **Merging from owldesk** needs its own credential (`OWLLIE_BRAIN_TOKEN`),
-  the only write to Owllie's repository; `GITHUB_TOKEN` stays read-only.
+- **Merging happens on GitHub.** owldesk links the pull request and says its
+  state (draft, conflicting, checks failing); it never writes to Owllie's
+  repository.
 - **The code comes from the review's diff.** Owllie writes the diff it read
   as a `diff` block of the inputs step, and the commit it read in
   `process.json`. owldesk shows findings in context from that diff, lets the

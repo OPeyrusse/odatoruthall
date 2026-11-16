@@ -254,7 +254,6 @@ surface TuningPage {
         subject.is_merged
 
     provides:
-        tuning/OperatorMergesTuning(subject)
         tuning/OperatorRemovesTuning(subject)
 
     related:
@@ -266,11 +265,11 @@ surface TuningPage {
         -- of each, the cases written, the rule changes as diffs, the
         -- measures before and after.
 
-    @guarantee MergeWhenReady
+    @guarantee ThePullRequestIsOneClickAway
         -- The pull request is linked, with its state, whether it is a draft,
-        -- whether it can be merged and whether its checks fail. The merge
-        -- action is offered when the merge credential is there; when the
-        -- pull request cannot be merged, the page says why instead.
+        -- whether it conflicts and whether its checks fail, so the operator
+        -- knows before opening it whether it can be merged. It is read and
+        -- merged on GitHub.
 }
 
 surface ReviewSettingsPanel {
@@ -308,10 +307,10 @@ surface ReviewSettingsPanel {
         OperatorConfirmsCleanup()
 
     @guarantee CredentialsAreNeverSettings
-        -- The launcher's own credentials, for reviews and for tunings, the
-        -- credential that may delete branches, and the one that may merge a
-        -- tuning's pull request come with the process, like the GitHub and
-        -- Jira ones. The panel says whether each is there, never what it is.
+        -- The launcher's own credentials, for reviews and for tunings, and
+        -- the credential that may delete branches come with the process, like
+        -- the GitHub and Jira ones. The panel says whether each is there,
+        -- never what it is.
 
     @guarantee CleanupIsPreviewed
         -- The branches a cleanup would delete are listed before the operator

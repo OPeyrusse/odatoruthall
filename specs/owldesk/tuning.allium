@@ -18,8 +18,8 @@
 -- results repository, tune/<run id>, in the layout Owllie documents, and the
 -- installation reads that branch the way it reads a review's. The branch
 -- names the pull request once it exists; the installation then follows the
--- pull request until it is merged or closed, and merges it when the operator
--- asks.
+-- pull request until it is merged or closed, and links to it: the operator
+-- reads and merges it on GitHub.
 --
 -- Three promises hold:
 --
@@ -30,8 +30,8 @@
 --   * the request names the reviewed pull request, the commit the review
 --     read and the remarks, and nothing else: the session reads the code
 --     itself, and no code travels through the request;
---   * nothing here writes to Owllie's repository except to merge a tuning
---     pull request the operator asked to merge, with a credential of its own.
+--   * nothing here writes to Owllie's repository: its pull requests are read
+--     with the operator's GitHub credential, and merged on GitHub.
 
 use "../shared/access.allium" as access
 use "../shared/config.allium" as settings
@@ -88,16 +88,6 @@ enum TuningLaunchStatus {
 
 enum TuningPullRequestState { open | merged | closed }
 
-enum MergeRefusal {
-    no_merge_credential
-    | no_pull_request
-    | not_open
-    | still_draft           -- the session left it as a draft: a regression
-                            -- or a remark it did not apply
-    | not_mergeable         -- conflicts with the base branch
-    | checks_failing
-}
-
 ------------------------------------------------------------
 -- Value Types
 ------------------------------------------------------------
@@ -153,13 +143,6 @@ external entity TuningPullRequestAnswer {
     is_draft: Boolean
     mergeable: Boolean
     checks_failing: Boolean
-}
-
-external entity MergeAnswer {
-    -- What GitHub says when asked to merge a tuning's pull request.
-    tuning: Tuning
-    merged: Boolean
-    failure: String?
 }
 
 ------------------------------------------------------------
@@ -628,54 +611,6 @@ rule TuningPullRequestRead {
 }
 
 ------------------------------------------------------------
--- Rules -- merging
-------------------------------------------------------------
-
-rule OperatorMergesTuning {
-    when: OperatorMergesTuning(tuning)
-    requires: merge_credential_present()
-    requires: tuning.is_open
-    requires: not tuning.run.pull_request_is_draft
-    requires: tuning.run.pull_request_mergeable
-    requires: not tuning.run.pull_request_checks_failing
-    ensures: TuningMergeRequested(tuning: tuning)
-
-    @guidance
-        -- Merging writes to Owllie's repository, with a credential that
-        -- comes with the process and may merge there; the GitHub credential
-        -- stays read-only. The pull request is read again right after.
-}
-
-rule TuningMergeRefused {
-    when: OperatorMergesTuning(tuning)
-    requires:
-        not merge_credential_present()
-        or not tuning.is_open
-        or tuning.run.pull_request_is_draft
-        or not tuning.run.pull_request_mergeable
-        or tuning.run.pull_request_checks_failing
-    ensures:
-        if not merge_credential_present():
-            MergeRejected(reason: no_merge_credential)
-        else if not tuning.has_pull_request:
-            MergeRejected(reason: no_pull_request)
-        else if not tuning.is_open:
-            MergeRejected(reason: not_open)
-        else if tuning.run.pull_request_is_draft:
-            MergeRejected(reason: still_draft)
-        else if not tuning.run.pull_request_mergeable:
-            MergeRejected(reason: not_mergeable)
-        else:
-            MergeRejected(reason: checks_failing)
-}
-
-rule TuningMergeAnswered {
-    when: TuningMerged(answer)
-    requires: answer.merged
-    ensures: answer.tuning.run.pull_request_state = merged
-}
-
-------------------------------------------------------------
 -- Rules -- cleaning up
 ------------------------------------------------------------
 
@@ -772,11 +707,8 @@ surface TuningResultsIntegration {
             TuningBranchObserved(branch)
         for answer in TuningPullRequestAnswers:
             TuningPullRequestObserved(answer)
-        for answer in MergeAnswers:
-            TuningMerged(answer)
 
-    @guarantee MergeIsTheOnlyWrite
+    @guarantee ReadOnly
         -- Tuning branches and pull requests are read with the operator's
-        -- GitHub credential. The only write to Owllie's repository is the
-        -- merge the operator asked for, with the merge credential.
+        -- GitHub credential; nothing is written to Owllie's repository.
 }
