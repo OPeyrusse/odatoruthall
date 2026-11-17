@@ -15,8 +15,9 @@ Three applications, one server, one operator:
   [Owllie](https://github.com/OPeyrusse/owllie) in a Claude cloud session:
   paste a pull request link, follow the run while it goes, then read its
   summary and each review agent's findings, and mark them relevant or false
-  positives. Each run writes to its own branch of a results repository; the
-  installation reads it back from there.
+  positives. A pull request can be run again from its review page, which
+  picks any of its runs and opens on the latest. Each run writes to its own
+  branch of a results repository; the installation reads it back from there.
 
 `specs/` is the primary artefact. The `.allium` files say what the installation
 does, in domain terms; this code implements them. Read the spec before changing
@@ -86,7 +87,10 @@ described in Owllie's README. Here:
    `activeviam/owllie-results`) and save: it is checked at once, and the
    badge in the header turns to *owllie ready*.
 3. Paste a pull request link in **owldesk**, or use *Review with Owllie* on a
-   pull request in gitdesk.
+   pull request in gitdesk. To review it again — after a push, or with
+   another brain ref — use *Run again* on its review page; the list shows one
+   line per pull request with its latest run, and the review page's *Run*
+   picker moves between the runs.
 
 The results branches are read every minute while a review is in flight and
 every ten minutes otherwise; a quiet results repository costs one GitHub

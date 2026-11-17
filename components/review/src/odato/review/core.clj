@@ -291,6 +291,15 @@
         (submit! sys #(fire! sys run-id))
         {:ok true :run-id run-id}))))
 
+(defn launch-again!
+  "OperatorRequestsAnotherReview: another run of the pull request a review is
+  of, refused like any other launch. Answers as `launch!` does, or `{:ok false
+  :refusal :no-such-review}`."
+  [sys run-id brain-ref]
+  (if-let [r (review sys run-id)]
+    (launch! sys {:url (owllie/pull-request-url (:pull-request r)) :brain-ref brain-ref})
+    {:ok false :refusal :no-such-review}))
+
 ;; ------------------------------------------------------------------ polling
 
 (defn tick!

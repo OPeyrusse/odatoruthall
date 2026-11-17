@@ -97,7 +97,8 @@
    :launcher-unavailable "The launcher chosen in the settings is not configured."
    :already-reviewing "A review of that pull request is already starting or running."
    :fire-limit-reached "The scheduled task has taken all the reviews it accepts this hour."
-   :pull-request-not-found "GitHub does not show that pull request."})
+   :pull-request-not-found "GitHub does not show that pull request."
+   :no-such-review "That review is gone: ask for one from the list."})
 
 (defn- readiness
   "What would refuse a review before the operator types anything."
@@ -166,23 +167,25 @@
      (when-let [failure (get-in r [:run :error :code])]
        [:span {:class parts/faint} failure])]))
 
-(defn- pull-request-row [sys {:keys [pull-request reviews]}]
-  (let [latest (first reviews)
-        older (rest reviews)]
+(defn- run-count [n]
+  (if (> n 1)
+    (parts/chip (plural n "run") :violet)
+    [:span {:class parts/faint} (plural n "run")]))
+
+(defn- pull-request-row
+  "One pull request: its latest run, and how many it had. The earlier runs are
+  chosen from the review page."
+  [sys {:keys [pull-request reviews]}]
+  (let [latest (first reviews)]
     [:li {:class (str "flex flex-col gap-1 px-4 py-3 " separated)}
-     [:div {:class "flex flex-wrap items-baseline gap-x-2 gap-y-1"}
+     [:div {:class "flex flex-wrap items-center gap-x-2 gap-y-1"}
       [:a {:href (review-href (:run-id latest))
            :class "font-medium text-slate-900 hover:underline dark:text-slate-100"}
        (or (:title latest) (pr-label pull-request))]
       [:a {:href (pr-url pull-request) :target "_blank" :rel "noreferrer"
            :class (str parts/faint " hover:underline")} (pr-label pull-request)]
-      [:span {:class parts/faint} (plural (count reviews) "review")]]
-     [:ul (review-line sys latest)]
-     (when (seq older)
-       [:details {:class "text-sm"}
-        [:summary {:class (str parts/muted " cursor-pointer")}
-         (str "Earlier reviews (" (count older) ")")]
-        [:ul {:class "pl-2"} (map #(review-line sys %) older)]])]))
+      (run-count (count reviews))]
+     [:ul (review-line sys latest)]]))
 
 (defn- reviews-card [sys]
   (let [groups (review/by-pull-request sys)
@@ -421,13 +424,77 @@
 
 (defn step-ids [r] (set (map :id (get-in r [:run :steps]))))
 
+(defn- asked-at [r] (or (:asked-at r) (get-in r [:launch :fired-at])))
+
+(defn- run-option-label
+  "A run as the picker names it: when it was asked for, where it stands, and
+  what it found."
+  [r latest?]
+  (let [[_ label] (state-tones (:state r) [nil (some-> (:state r) name)])
+        found (for [{:keys [label value]} (get-in r [:run :headline])] (str value " " label))]
+    (str (str/join " · " (concat [(or (t/format-minute (asked-at r)) (:run-id r)) label] found))
+         (when latest? " (latest)"))))
+
+(defn- input-of-width
+  "The input style, at `width` rather than the whole line."
+  [width]
+  (str/replace parts/input #"\bw-full\b" width))
+
+(defn- run-picker
+  "Every run of the pull request, the latest first; choosing one shows it.
+  Without scripts, the form's button does what the change does."
+  [r runs]
+  [:form {:method "get" :action "/owldesk/review" :class "flex min-w-0 flex-wrap items-center gap-2"}
+   [:label {:class "flex min-w-0 items-center gap-2"}
+    [:span {:class "text-sm font-medium"} "Run"]
+    [:select {:name "run" :class (str (input-of-width "w-auto") " min-w-0 max-w-full")
+              :onchange "this.form.submit()"}
+     (for [[i o] (map-indexed vector runs)]
+       [:option {:value (:run-id o) :selected (= (:run-id o) (:run-id r))}
+        (run-option-label o (zero? i))])]]
+   [:noscript [:button {:type "submit" :class parts/button} "Show"]]
+   (run-count (count runs))])
+
+(defn- run-again-form
+  "Asks for another run of the same pull request. Refused, with the reason
+  on the page, like any other launch."
+  [sys r runs]
+  (let [in-force (review/settings sys)
+        blocker (or (when (some review/active? runs)
+                      "A run of this pull request is starting or running.")
+                    (readiness sys))
+        action (str "/owldesk/review/" (:run-id r) "/run-again")]
+    [:form {:method "post" :action action :class "flex flex-wrap items-center gap-2"}
+     [:label {:class "flex items-center gap-2"}
+      [:span {:class "text-sm font-medium"} "Brain ref"]
+      [:input {:class (str (input-of-width "w-40") " font-mono") :type "text" :name "brain-ref"
+               :title "Empty: the brain ref the settings name"
+               :placeholder (or (:brain-ref in-force) "default branch")}]]
+     [:button {:class parts/primary-button :type "submit" :disabled (some? blocker) :title blocker}
+      "Run again"]]))
+
+(defn- when-asked
+  "When the run was asked for and, once it has ended, when it did."
+  [sys r]
+  (let [now-ms (now sys)
+        at (asked-at r)
+        ended (when (#{:done :failed} (:state r)) (get-in r [:run :updated-at]))]
+    (list
+     (when at
+       [:span "asked " [:time {:datetime (t/format-instant at)} (t/format-minute at)]
+        " (" (parts/relative-time now-ms at) ")"])
+     (when ended
+       [:span "ended " [:time {:datetime (t/format-instant ended)} (t/format-minute ended)]]))))
+
 (defn review-page
-  "One review in full: where it stands, then the view of one of its steps."
+  "One review in full: which run of its pull request it is, and when; where
+  it stands; then the view of one of its steps."
   [sys r {:keys [step]}]
-  (let [others (->> (review/by-pull-request sys)
-                    (filter #(= (review/pull-request-key (:pull-request %))
-                                (review/pull-request-key (:pull-request r))))
-                    first :reviews)
+  (let [runs (or (->> (review/by-pull-request sys)
+                      (filter #(= (review/pull-request-key (:pull-request %))
+                                  (review/pull-request-key (:pull-request r))))
+                      first :reviews)
+                 [r])
         details (filter map? (get-in r [:run :process :details]))
         branch (or (get-in r [:run :branch]) (get-in r [:launch :branch]))
         shown (current-step r step)]
@@ -441,6 +508,7 @@
        [:h1 {:class "text-xl font-semibold"} (or (:title r) (pr-label (:pull-request r)))]
        [:div {:class "flex flex-wrap items-center gap-2 text-sm text-slate-500 dark:text-slate-400"}
         (state-chip r)
+        (when-asked sys r)
         [:span {:class "font-mono text-xs"} (:run-id r)]
         (for [{:keys [label value]} details] [:span (str label " " value)])]
        [:div {:class "flex flex-wrap gap-2"}
@@ -452,13 +520,10 @@
         (when-not (review/active? r)
           [:form {:method "post" :action (str "/owldesk/review/" (:run-id r) "/remove")
                   :onsubmit "return confirm('Delete this review and its results branch?')"}
-           [:button {:type "submit" :class parts/button} "Remove"]])]]]
-     (when (> (count others) 1)
-       [:nav {:class "flex flex-wrap gap-2"}
-        (for [o others]
-          [:a {:href (review-href (:run-id o))
-               :class (str parts/button (when (= (:run-id o) (:run-id r)) " ring-2 ring-sky-500"))}
-           (:run-id o) " " (state-chip o)])])
+           [:button {:type "submit" :class parts/button} "Remove"]])]]
+      [:div {:class (str "flex flex-wrap items-center justify-between gap-3 px-4 py-3 " separated)}
+       (run-picker r runs)
+       (run-again-form sys r runs)]]
      (schema-warning r)
      (state-banner sys r)
      (when (and (:run r) (not= :done (:state r)))

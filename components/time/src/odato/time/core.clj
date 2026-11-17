@@ -56,6 +56,11 @@
 (defn format-instant [ms]
   (when ms (.toString (Instant/ofEpochMilli (long ms)))))
 
+(def ^:private minute-formatter (DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm 'UTC'"))
+
+(defn format-minute [ms]
+  (when ms (.format (.atZone (Instant/ofEpochMilli (long ms)) ZoneOffset/UTC) minute-formatter)))
+
 (defn- ^ZonedDateTime utc [ms]
   (.atZone (Instant/ofEpochMilli (long ms)) ZoneOffset/UTC))
 

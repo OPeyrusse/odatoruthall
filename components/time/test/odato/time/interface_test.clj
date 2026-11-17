@@ -20,6 +20,10 @@
          (t/parse-instant "2026-09-15T09:00:00.000+0200")))
   (is (nil? (t/parse-instant "not a time"))))
 
+(deftest an-instant-as-the-operator-reads-it
+  (is (= "2026-09-15 10:30 UTC" (t/format-minute tuesday)))
+  (is (nil? (t/format-minute nil))))
+
 (deftest an-activity-belongs-to-one-day
   (let [d (t/utc-midnight-of tuesday)]
     (is (t/falls-within-day? tuesday d))

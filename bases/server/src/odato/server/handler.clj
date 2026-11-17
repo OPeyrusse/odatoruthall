@@ -122,6 +122,13 @@
                           #(ui/launch-outcome-fragment outcome)
                           #(ui/owldesk-page sys outcome)))
 
+      ;; The run picker of a review page, when scripts are off.
+      [:get ["owldesk" "review"]]
+      (let [run-id (str (param "run"))]
+        (if (review/review sys run-id)
+          {:status 303 :headers {"location" (str "/owldesk/review/" run-id)} :body ""}
+          (not-found sys "No such review. Its branch may not be read yet, or it was removed.")))
+
       [:post ["owldesk" "refresh"]]
       (do (future (review/read-results! sys)) (done request "/owldesk"))
 
@@ -230,6 +237,17 @@
             (review/judge! sys run-id fingerprint v)
             (review/withdraw-judgement! sys run-id fingerprint))
           (done request (str "/owldesk/review/" run-id)))
+
+        ;; /owldesk/review/:run-id/run-again: another run of its pull
+        ;; request, whose page is shown once it is asked for.
+        (and (= :post request-method) (= 4 (count segments))
+             (= ["owldesk" "review"] (subvec segments 0 2)) (= "run-again" (nth segments 3)))
+        (let [run-id (nth segments 2)
+              outcome (review/launch-again! sys run-id (param "brain-ref"))]
+          (cond
+            (:ok outcome) {:status 303 :headers {"location" (str "/owldesk/review/" (:run-id outcome))} :body ""}
+            (review/review sys run-id) (html (ui/review-page sys (review/review sys run-id) nil outcome))
+            :else (not-found sys "No such review. Its branch may not be read yet, or it was removed.")))
 
         ;; /owldesk/review/:run-id/remove
         (and (= :post request-method) (= 4 (count segments))

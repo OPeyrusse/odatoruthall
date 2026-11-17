@@ -86,11 +86,18 @@
                            (owldesk/launch-outcome outcome)
                            (owldesk/body sys {:outcome outcome})]))))
 
-(defn review-page [sys review step]
-  (document (layout/page sys {:title (str "review " (:run-id review)) :section :owldesk}
-                         [:div {:data-on-load (str "@get('/sse/owldesk/review/" (:run-id review)
-                                                   (when step (str "/" step)) "')")}
-                          (owldesk/review-page sys review {:step step})])))
+(defn review-page
+  "One review. `outcome` is what asking for another run of its pull request
+  answered, when it was refused; it sits outside `#owldesk-review`, so the
+  page patching itself leaves it on screen."
+  ([sys review step] (review-page sys review step nil))
+  ([sys review step outcome]
+   (document (layout/page sys {:title (str "review " (:run-id review)) :section :owldesk}
+                          [:div {:data-on-load (str "@get('/sse/owldesk/review/" (:run-id review)
+                                                    (when step (str "/" step)) "')")
+                                 :class "flex flex-col gap-4"}
+                           (owldesk/launch-outcome outcome)
+                           (owldesk/review-page sys review {:step step})]))))
 
 (defn review-step?
   "Whether `step` names a step of the review's process."

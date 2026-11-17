@@ -72,6 +72,12 @@
   [sys request]
   (core/launch! sys request))
 
+(defn launch-again!
+  "Another run of the pull request the review `run-id` is of: answers as
+  `launch!` does, or `{:ok false :refusal :no-such-review}`."
+  [sys run-id brain-ref]
+  (core/launch-again! sys run-id brain-ref))
+
 ;; ------------------------------------------------------------------ reviews
 
 (defn reviews
