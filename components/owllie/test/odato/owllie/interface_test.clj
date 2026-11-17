@@ -55,6 +55,46 @@
                                               :branch "x" :brain-ref "rules/try"})
                        "BRAIN_REF=rules/try"))))
 
+(deftest the-tune-request-block
+  (let [block (owllie/tune-request-block
+               {:pull-request {:repository {:owner "acme" :name "x"} :number 3}
+                :head-sha "d07be31c0b8f6a4f1f1d6a3b2e9c8d7f6a5b4c3d"
+                :review-run-id "20261031T1012Z-abcd"
+                :results-repository {:owner "activeviam" :name "owllie-results"}
+                :branch "tune/20261116T0930Z-1c2d"
+                :brain-ref nil
+                :remarks [{:id "r1" :kind "missed" :agents [] :rule nil
+                           :file "src/A.java" :side "new" :line 3 :end_line 4
+                           :quote "if (m.get(k) == null) {" :note "Check-then-act.\nUse computeIfAbsent."}]})
+        lines (str/split-lines block)]
+    (is (= ["OWLLIE_TUNE v1"
+            "PR_URL=https://github.com/acme/x/pull/3"
+            "HEAD_SHA=d07be31c0b8f6a4f1f1d6a3b2e9c8d7f6a5b4c3d"
+            "REVIEW_RUN=20261031T1012Z-abcd"
+            "RESULTS_REPO=activeviam/owllie-results"
+            "RUN_BRANCH=tune/20261116T0930Z-1c2d"]
+           (take 6 lines)))
+    (testing "one remark per line, as JSON: a note's line breaks stay inside it"
+      (is (= 7 (count lines)))
+      (let [remark (json/read-str (subs (last lines) (count "REMARK=")))]
+        (is (= "Check-then-act.\nUse computeIfAbsent." (get remark "note")))
+        (is (contains? remark "rule"))
+        (is (nil? (get remark "rule")))
+        (is (= "src/A.java" (get remark "file")))))
+    (testing "the brain ref becomes the base of the pull request"
+      (is (str/includes? (owllie/tune-request-block {:pull-request {:repository {:owner "a" :name "b"} :number 1}
+                                                     :results-repository {:owner "c" :name "d"}
+                                                     :branch "tune/x" :brain-ref "rules/try" :remarks []})
+                         "BRAIN_BASE=rules/try\n"))))
+  (testing "tuning branches"
+    (is (= "tune/20261116T0930Z-1c2d" (owllie/tune-branch-name "20261116T0930Z-1c2d")))
+    (is (= {:run-id "20261116T0930Z-1c2d"} (owllie/parse-tune-branch-name "tune/20261116T0930Z-1c2d")))
+    (is (nil? (owllie/parse-tune-branch-name "tune/nope")))
+    (is (nil? (owllie/parse-tune-branch-name "review/acme/x/3/20261116T0930Z-1c2d"))))
+  (testing "the CLI is asked for the skill the request names"
+    (is (= "owllie-tune" (owllie/skill-for "OWLLIE_TUNE v1\nPR_URL=x")))
+    (is (= "owllie-run" (owllie/skill-for "OWLLIE_RUN v1\nPR_URL=x")))))
+
 (deftest ref-names
   (is (owllie/ref-name? "main"))
   (is (owllie/ref-name? "rules/try-2"))

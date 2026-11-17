@@ -26,6 +26,7 @@
      :pull-request-details {\"acme/widget#12\" {:title ... :author ... :state :open
                                               :closed-at nil :head-sha ...}}
      :branches {\"acme/owllie-results\" {\"review/...\" {\"owllie/meta.json\" \"{...}\"}}}
+     :review-comments {\"acme/widget#12\" [{:id :author :path :line :side ...}]}
      :delete-failure :credential-rejected}       ; deleting a branch fails
 
   A repository missing from `:repositories` is not found. The branches are
@@ -169,6 +170,13 @@
                                             branches))
                                     (:branches @state))]
                {:content content}
+               {:failure :not-found})))
+
+  (-review-comments [_ request]
+    (answer state script :review-comments request
+            #(if (get-in script [:pull-request-details (str (repo-key request) "#" (:number request))])
+               {:comments (vec (get-in script [:review-comments
+                                               (str (repo-key request) "#" (:number request))]))}
                {:failure :not-found})))
 
   (-delete-branch [_ request]

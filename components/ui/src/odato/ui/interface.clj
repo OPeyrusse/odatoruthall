@@ -87,17 +87,37 @@
                            (owldesk/body sys {:outcome outcome})]))))
 
 (defn review-page
-  "One review. `outcome` is what asking for another run of its pull request
-  answered, when it was refused; it sits outside `#owldesk-review`, so the
-  page patching itself leaves it on screen."
+  "One review. `outcomes` holds what asking for another run of its pull
+  request answered (`:launch`) and what sending its remarks answered
+  (`:remarks`), when there is one to say; both sit outside `#owldesk-review`,
+  so the page patching itself leaves them on screen."
   ([sys review step] (review-page sys review step nil))
-  ([sys review step outcome]
+  ([sys review step {:keys [launch remarks]}]
    (document (layout/page sys {:title (str "review " (:run-id review)) :section :owldesk}
                           [:div {:data-on-load (str "@get('/sse/owldesk/review/" (:run-id review)
                                                     (when step (str "/" step)) "')")
                                  :class "flex flex-col gap-4"}
-                           (owldesk/launch-outcome outcome)
+                           (owldesk/launch-outcome launch)
+                           (owldesk/remarks-outcome remarks)
                            (owldesk/review-page sys review {:step step})]))))
+
+(defn remark-form-page
+  "The page a remark is written or changed on: no event stream patches it,
+  so nothing the operator types is lost."
+  [sys review opts]
+  (document (layout/page sys {:title (str "remark on " (:run-id review)) :section :owldesk}
+                         (owldesk/remark-form-page sys review opts))))
+
+(defn tuning-page [sys tuning step]
+  (document (layout/page sys {:title (str "tuning " (:run-id tuning)) :section :owldesk}
+                         [:div {:data-on-load (str "@get('/sse/owldesk/tuning/" (:run-id tuning)
+                                                   (when step (str "/" step)) "')")}
+                          (owldesk/tuning-page sys tuning {:step step})])))
+
+(defn tuning-step?
+  "Whether `step` names a step of the tuning's process."
+  [tuning step]
+  (contains? (owldesk/step-ids tuning) step))
 
 (defn review-step?
   "Whether `step` names a step of the review's process."
@@ -128,6 +148,8 @@
 (defn owldesk-fragment [sys] (render (owldesk/body sys {})))
 (defn launch-outcome-fragment [outcome] (render (owldesk/launch-outcome outcome)))
 (defn review-fragment [sys review step] (render (owldesk/review-page sys review {:step step})))
+(defn remarks-outcome-fragment [outcome] (render (owldesk/remarks-outcome outcome)))
+(defn tuning-fragment [sys tuning step] (render (owldesk/tuning-page sys tuning {:step step})))
 (defn review-settings-fragment [sys outcome]
   (render (owldesk/settings-section sys {:outcome outcome})))
 

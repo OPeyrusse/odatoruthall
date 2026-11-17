@@ -74,7 +74,7 @@ in
       example = [ "%t/secrets/odatoruthall.env" ];
       description = ''
         Files of `NAME=value` lines read by systemd when the service starts: where the secrets go,
-        such as `GITHUB_TOKEN`, `JIRA_TOKEN`, `TURSO_TOKEN`, `OWLLIE_FIRE_TOKEN` or `OWLLIE_RESULTS_TOKEN`.
+        such as `GITHUB_TOKEN`, `JIRA_TOKEN`, `TURSO_TOKEN`, `OWLLIE_FIRE_TOKEN`, `OWLLIE_TUNE_FIRE_TOKEN` or `OWLLIE_RESULTS_TOKEN`.
         They stay out of the Nix store, and are written by whatever manages the secrets.
         systemd specifiers are expanded (`%h` the home directory, `%t` the runtime directory, ...).
         A path prefixed by `-` may be missing. Their values override those of `environment`.
@@ -112,6 +112,7 @@ in
           '' "%S/odatoruthall/odatoruthall.edn";
 
           OWLLIE_FIRE_URL = mkVariable "Fire URL of the Claude scheduled task running Owllie." null;
+          OWLLIE_TUNE_FIRE_URL = mkVariable "Fire URL of the Claude scheduled task running Owllie's tuning." null;
           OWLLIE_CLI_DIR = mkVariable "Clone of Owllie, to launch the reviews with the Claude CLI." null;
           OWLLIE_CLAUDE_COMMAND = mkVariable "Command running the Claude CLI, `claude` by default." null;
         };

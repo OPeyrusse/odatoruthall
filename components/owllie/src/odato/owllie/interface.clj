@@ -44,6 +44,33 @@
   [run]
   (request/request-block run))
 
+;; ------------------------------------------------------------------- tuning
+
+(def tune-branch-prefix request/tune-branch-prefix)
+
+(defn tune-branch-name
+  "`tune/<run id>`: where a tuning writes in the results repository, and the
+  branch of its pull request on Owllie."
+  [run-id]
+  (request/tune-branch-name run-id))
+
+(defn parse-tune-branch-name
+  "`{:run-id}` for a tuning's branch, or nil."
+  [s]
+  (request/parse-tune-branch-name s))
+
+(defn tune-request-block
+  "The `OWLLIE_TUNE v1` block (Owllie's `shared/tune-layout.md`):
+  `{:pull-request :head-sha :review-run-id :results-repository :branch
+  :brain-ref :remarks}`, each remark a map in Owllie's field names."
+  [batch]
+  (request/tune-request-block batch))
+
+(defn skill-for
+  "The Owllie skill a request asks for: `owllie-tune` or `owllie-run`."
+  [request-text]
+  (launcher/skill-for request-text))
+
 ;; --------------------------------------------------------------- launchers
 
 (defn scheduled-task

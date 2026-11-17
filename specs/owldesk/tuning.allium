@@ -1,0 +1,815 @@
+-- allium: 3
+--
+-- Tuning — the operator's remarks on a review, gathered while reading it,
+-- sent to Owllie in one batch, and turned by Owllie into a pull request on its
+-- own rules.
+--
+-- While reading a review, the operator writes remarks: on a finding (a false
+-- positive, a finding worth keeping as an example, a wrong severity, a text
+-- that does not say what is wrong), on lines of the diff the review should
+-- have flagged, or on the review as a whole. Remarks are drafts: they can be
+-- read, changed and deleted, review by review, until the operator sends them.
+-- Sending hands every draft of the review to a launcher, in one request, which
+-- starts a cloud session running Owllie's tuning. That session anonymizes the
+-- code, writes evaluation cases and rule changes, measures them, and opens one
+-- pull request on Owllie's own repository.
+--
+-- A miss is the hardest remark to write, since nothing on screen points at
+-- it. Lines of the diff, added, kept or removed, can each carry one, and the
+-- comments reviewers wrote on the pull request are offered as candidates:
+-- those on lines where the review found nothing can be turned into a missed
+-- remark, or dismissed. Owllie then diagnoses each miss before changing
+-- anything: found and filtered out, agent not run, rule not applied, rule
+-- too narrow, no rule, or out of every agent's scope.
+--
+-- As for a review, the session writes where it stands to a branch of the
+-- results repository, tune/<run id>, in the layout Owllie documents, and the
+-- installation reads that branch the way it reads a review's. The branch
+-- names the pull request once it exists; the installation then follows the
+-- pull request until it is merged or closed, and links to it: the operator
+-- reads and merges it on GitHub.
+--
+-- Three promises hold:
+--
+--   * a remark keeps a copy of the finding and of the code it is about, so it
+--     stays readable once the review's branch is deleted, and a sent remark
+--     never changes: to send it again, the operator copies it into a new
+--     draft;
+--   * the request names the reviewed pull request, the commit the review
+--     read and the remarks, and nothing else: the session reads the code
+--     itself, and no code travels through the request;
+--   * nothing here writes to Owllie's repository: its pull requests are read
+--     with the operator's GitHub credential, and merged on GitHub.
+
+use "../shared/access.allium" as access
+use "../shared/config.allium" as settings
+use "./review.allium" as review
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum RemarkKind {
+    false_positive      -- a finding that should not have been raised
+    | relevant          -- a finding that is right: an example to keep
+    | wrong_severity    -- a finding raised at the wrong severity
+    | unclear           -- a finding whose text does not say what is wrong
+    | missed            -- lines of the diff, on either side, the review
+                        -- should have flagged
+    | general           -- the review as a whole, tied to no code
+}
+
+enum RemarkStatus { draft | sent }
+
+enum RemarkSeverity { blocker | major | minor | info }
+
+enum DiffSide {
+    new                 -- lines after the change: added or kept
+    | old               -- lines the change removed
+}
+
+enum RemarkFault {
+    no_results              -- the review has no branch to point into
+    | finding_not_found
+    | lines_not_in_diff     -- a missed remark must point at lines of the
+                            -- diff the review read
+    | note_required         -- unclear, missed and general remarks say why
+    | note_too_long
+    | severity_not_changed  -- a wrong severity remark proposes another one
+    | not_a_draft           -- a sent remark no longer changes
+}
+
+enum TuningRefusal {
+    no_draft_remarks
+    | too_many_remarks
+    | head_unknown                  -- the review's results do not say which
+                                    -- commit it read
+    | github_unavailable
+    | no_results_repository
+    | results_repository_not_ready
+    | launcher_unavailable          -- the chosen launcher has no tuning
+                                    -- configured
+    | tuning_in_flight              -- a batch of this review is still
+                                    -- starting or running
+    | fire_limit_reached
+}
+
+enum TuningLaunchStatus {
+    firing          -- handed to the launcher, no answer yet
+    | fired         -- the launcher started a session
+    | refused       -- the launcher said no
+}
+
+enum TuningPullRequestState { open | merged | closed }
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value CodeLines {
+    -- Lines of a review's diff, numbered on their side.
+    file: String
+    side: DiffSide
+    line: Integer
+    end_line: Integer
+}
+
+value FindingCopy {
+    -- What a finding said when the remark was written.
+    fingerprint: String
+    rule: String
+    agents: Set<String>
+    severity: String
+    lines: CodeLines
+    quote: String
+    observation: String
+}
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity ReviewComment {
+    -- A reviewer's comment on lines of the reviewed pull request, as GitHub
+    -- reports it, placed in the diff the review read.
+    pull_request: review/PullRequestReference
+    comment_id: String
+    author: String
+    by_operator: Boolean
+    lines: CodeLines?               -- null when its lines cannot be found in
+                                    -- the review's diff
+    body: String
+    url: String
+}
+
+external entity TuningLaunchAnswer {
+    -- What the launcher hands back for one batch: the session it started, or
+    -- why it did not.
+    launch: TuningLaunch
+    session_url: String?
+    failure: String?
+}
+
+external entity TuningBranch {
+    -- One branch of the results repository under the tuning prefix, as
+    -- GitHub reports it, with the files it holds.
+    name: String
+    head: String
+    run_id: String
+    state: review/RunState?
+    updated_at: Timestamp?
+    failure: review/RunFailure?
+    steps: List<review/RunStep>
+    summary_step: String?
+    pull_request_url: String?       -- the link the run gives its pull request
+}
+
+external entity TuningPullRequestAnswer {
+    -- What GitHub says of a tuning's pull request on Owllie's repository.
+    run: TuningRun
+    state: TuningPullRequestState
+    is_draft: Boolean
+    mergeable: Boolean
+    checks_failing: Boolean
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity TuningRemark {
+    -- One remark of the operator on one review. It is kept here, not on any
+    -- branch, and outlives the review's branch.
+    id: String
+    review_run_id: String
+    pull_request: review/PullRequestReference
+    kind: RemarkKind
+    finding: FindingCopy?           -- null for missed and general remarks
+    lines: CodeLines?               -- null for general remarks
+    excerpt: String?                -- the code around the lines, as the
+                                    -- review's diff showed it
+    rule: String?                   -- the rule it is about; for a missed
+                                    -- remark, the one that should have applied
+    note: String
+    proposed_severity: RemarkSeverity?  -- for a wrong severity remark, the
+                                        -- right one; for a missed remark, the
+                                        -- one it should have had, if said
+    from_comment: String?           -- the reviewer's comment it was drafted
+                                    -- from
+    status: RemarkStatus
+    batch: TuningLaunch?
+    created_at: Timestamp
+    updated_at: Timestamp
+
+    transitions status {
+        draft -> sent
+        terminal: sent
+    }
+}
+
+entity DismissedComment {
+    -- A reviewer's comment the operator said was not a miss of the review.
+    review_run_id: String
+    comment_id: String
+    dismissed_at: Timestamp
+}
+
+entity TuningLaunch {
+    -- That a batch of remarks was sent, and what the launcher made of it.
+    run_id: String                  -- the tuning run's id, also its batch's
+    branch: String                  -- tune/<run id>
+    review_run_id: String
+    pull_request: review/PullRequestReference
+    head_sha: String                -- the commit the review read
+    results_repository: settings/RepositoryReference
+    brain_ref: String?              -- the branch of Owllie the pull request
+                                    -- targets; none means its default branch
+    status: TuningLaunchStatus
+    fired_at: Timestamp
+    session_url: String?
+    refusal: String?
+
+    remarks: TuningRemark with batch = this
+
+    transitions status {
+        firing -> fired
+        firing -> refused
+        terminal: fired, refused
+    }
+}
+
+entity TuningRun {
+    -- What a tuning branch says about its run. It is read again whenever the
+    -- branch moves, and it goes when the branch goes.
+    run_id: String
+    branch: String
+    head: String
+    state: review/RunState?
+    updated_at: Timestamp?
+    failure: review/RunFailure?
+    steps: List<review/RunStep>
+    summary_step: String?
+    pull_request_url: String?
+    pull_request_state: TuningPullRequestState?
+    pull_request_is_draft: Boolean
+    pull_request_mergeable: Boolean
+    pull_request_checks_failing: Boolean
+}
+
+entity Tuning {
+    -- One batch, as the operator sees it: what was sent, and what its branch
+    -- and its pull request say. Either half can be missing.
+    run_id: String
+    launch: TuningLaunch?
+    run: TuningRun?
+
+    review_run_id: String
+
+    is_done: run != null and run.state = done
+    is_failed: run != null and run.state = failed
+    is_under_way: run != null and run.state = running
+    is_stalled: is_under_way and run.updated_at + config.stall_after <= now
+    is_running: is_under_way and not is_stalled
+    is_starting: run = null
+        and launch != null
+        and launch.status in {firing, fired}
+        and launch.fired_at + config.start_timeout > now
+    never_started: run = null
+        and launch != null
+        and (launch.status = refused or launch.fired_at + config.start_timeout <= now)
+
+    has_pull_request: run != null and run.pull_request_url != null
+    is_merged: has_pull_request and run.pull_request_state = merged
+    is_open: has_pull_request and run.pull_request_state = open
+    is_closed: has_pull_request and run.pull_request_state = closed
+
+    -- Still turning remarks into a pull request: another batch of the same
+    -- review waits.
+    is_active: is_starting or is_running
+
+    -- Ended without a pull request that may still be merged: its remarks
+    -- can be copied into new drafts.
+    is_given_up: never_started or is_failed or is_stalled or is_closed
+        or (is_done and not has_pull_request)
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    max_remarks_per_batch: Integer = 20
+    max_note_length: Integer = 2000
+    -- A reviewer's comment within this many lines of a finding of the same
+    -- file is taken as covered by it, and not offered as a miss.
+    candidate_distance_lines: Integer = 3
+    -- The lines of the diff kept around a remark's lines, on each side.
+    excerpt_context_lines: Integer = 5
+    -- A tuning reads more than a review and writes more: it is given longer.
+    start_timeout: Duration = 5.minutes
+    stall_after: Duration = 30.minutes
+    -- What the tuning scheduled task accepts in an hour.
+    fires_per_hour: Integer = 30
+}
+
+------------------------------------------------------------
+-- Rules -- drafting remarks
+------------------------------------------------------------
+
+rule RemarkDrafted {
+    when: OperatorDraftsRemark(subject, kind, fingerprint, lines, note, proposed_severity, rule_id)
+    let finding = review/finding_of(subject, fingerprint)
+    let on_finding = kind in {false_positive, relevant, wrong_severity, unclear}
+    requires: subject.run != null
+    requires: not on_finding or finding != null
+    requires: kind != missed or (lines != null and lines_in_diff(subject, lines))
+    requires: not (kind in {unclear, missed, general}) or not is_blank(note)
+    requires: length(note) <= config.max_note_length
+    requires: kind != wrong_severity
+        or (proposed_severity != null and proposed_severity != severity_of(finding))
+    ensures:
+        if on_finding:
+            TuningRemark.created(
+                id: new_remark_id(subject.run_id),
+                review_run_id: subject.run_id,
+                pull_request: subject.pull_request,
+                kind: kind,
+                finding: copy_of(finding),
+                lines: lines_of(finding),
+                excerpt: excerpt_of(subject, lines_of(finding)),
+                rule: rule_of(finding),
+                note: note,
+                proposed_severity: proposed_severity,
+                status: draft,
+                created_at: now,
+                updated_at: now)
+        else:
+            TuningRemark.created(
+                id: new_remark_id(subject.run_id),
+                review_run_id: subject.run_id,
+                pull_request: subject.pull_request,
+                kind: kind,
+                lines: lines,
+                excerpt: excerpt_of(subject, lines),
+                rule: rule_id,
+                note: note,
+                proposed_severity: proposed_severity,
+                status: draft,
+                created_at: now,
+                updated_at: now)
+
+    @guidance
+        -- A false positive or relevant remark on a finding also records that
+        -- verdict, as judging the finding does; deleting the remark leaves the
+        -- verdict. The excerpt is cut from the diff the review read (the diff
+        -- block of its inputs step): the remark's lines and
+        -- excerpt_context_lines on each side, within the same hunk. A finding
+        -- whose lines are not in the diff keeps its quote alone. A remark on
+        -- a general matter has no lines, no excerpt and no severity.
+        --
+        -- A miss outside the diff -- a caller left unchanged, a test that
+        -- does not exist -- is pointed at the lines of the diff that cause
+        -- it, and its note says where it shows.
+}
+
+rule RemarkRefused {
+    when: OperatorDraftsRemark(subject, kind, fingerprint, lines, note, proposed_severity, rule_id)
+    let finding = review/finding_of(subject, fingerprint)
+    let on_finding = kind in {false_positive, relevant, wrong_severity, unclear}
+    requires:
+        subject.run = null
+        or (on_finding and finding = null)
+        or (kind = missed and (lines = null or not lines_in_diff(subject, lines)))
+        or (kind in {unclear, missed, general} and is_blank(note))
+        or length(note) > config.max_note_length
+        or (kind = wrong_severity
+            and (proposed_severity = null or proposed_severity = severity_of(finding)))
+    ensures:
+        if subject.run = null:
+            RemarkRejected(fault: no_results)
+        else if on_finding and finding = null:
+            RemarkRejected(fault: finding_not_found)
+        else if kind = missed and (lines = null or not lines_in_diff(subject, lines)):
+            RemarkRejected(fault: lines_not_in_diff)
+        else if kind in {unclear, missed, general} and is_blank(note):
+            RemarkRejected(fault: note_required)
+        else if length(note) > config.max_note_length:
+            RemarkRejected(fault: note_too_long)
+        else:
+            RemarkRejected(fault: severity_not_changed)
+
+    @guidance
+        -- A refused remark records nothing, and the form keeps what the
+        -- operator typed.
+}
+
+rule RemarkEdited {
+    when: OperatorEditsRemark(remark, note, proposed_severity)
+    requires: remark.status = draft
+    requires: not (remark.kind in {unclear, missed, general}) or not is_blank(note)
+    requires: length(note) <= config.max_note_length
+    requires: remark.kind != wrong_severity
+        or (proposed_severity != null and proposed_severity != severity_of(remark.finding))
+    ensures:
+        remark.note = note
+        remark.proposed_severity = proposed_severity
+        remark.updated_at = now
+}
+
+rule RemarkEditRefused {
+    when: OperatorEditsRemark(remark, note, proposed_severity)
+    requires:
+        remark.status != draft
+        or (remark.kind in {unclear, missed, general} and is_blank(note))
+        or length(note) > config.max_note_length
+        or (remark.kind = wrong_severity
+            and (proposed_severity = null or proposed_severity = severity_of(remark.finding)))
+    ensures:
+        if remark.status != draft:
+            RemarkRejected(fault: not_a_draft)
+        else if remark.kind in {unclear, missed, general} and is_blank(note):
+            RemarkRejected(fault: note_required)
+        else if length(note) > config.max_note_length:
+            RemarkRejected(fault: note_too_long)
+        else:
+            RemarkRejected(fault: severity_not_changed)
+}
+
+rule RemarkDeleted {
+    when: OperatorDeletesRemark(remark)
+    requires: remark.status = draft
+    ensures: not exists remark
+}
+
+rule RemarkRedrafted {
+    when: OperatorRedraftsRemark(remark)
+    let tuning = Tuning{run_id: remark.batch.run_id}
+    requires: remark.status = sent
+    requires: tuning.is_given_up
+    ensures:
+        TuningRemark.created(
+            id: new_remark_id(remark.review_run_id),
+            review_run_id: remark.review_run_id,
+            pull_request: remark.pull_request,
+            kind: remark.kind,
+            finding: remark.finding,
+            lines: remark.lines,
+            excerpt: remark.excerpt,
+            rule: remark.rule,
+            note: remark.note,
+            proposed_severity: remark.proposed_severity,
+            status: draft,
+            created_at: now,
+            updated_at: now)
+
+    @guidance
+        -- The sent remark stays as it was, tied to its batch; the copy is a
+        -- draft of the same review, to change and send again. It works even
+        -- once the review's branch is gone, since the remark carries its
+        -- finding and its code.
+}
+
+rule RemarkDraftedFromComment {
+    when: OperatorDraftsRemarkFromComment(subject, comment)
+    requires: subject.run != null
+    requires: comment.pull_request = subject.pull_request
+    requires: comment.lines != null and lines_in_diff(subject, comment.lines)
+    ensures:
+        TuningRemark.created(
+            id: new_remark_id(subject.run_id),
+            review_run_id: subject.run_id,
+            pull_request: subject.pull_request,
+            kind: missed,
+            lines: comment.lines,
+            excerpt: excerpt_of(subject, comment.lines),
+            note: truncated(comment.body, config.max_note_length),
+            from_comment: comment.comment_id,
+            status: draft,
+            created_at: now,
+            updated_at: now)
+
+    @guidance
+        -- The draft is a missed remark like any other: the operator reads
+        -- it, rewrites the note into what the review should have said, names
+        -- the rule if they know it, and may delete it. A comment a draft was
+        -- made from is no longer offered.
+}
+
+rule CommentDismissed {
+    when: OperatorDismissesComment(subject, comment)
+    requires: not exists DismissedComment{review_run_id: subject.run_id, comment_id: comment.comment_id}
+    ensures:
+        DismissedComment.created(
+            review_run_id: subject.run_id,
+            comment_id: comment.comment_id,
+            dismissed_at: now)
+}
+
+------------------------------------------------------------
+-- Rules -- sending a batch
+------------------------------------------------------------
+
+rule OperatorSendsRemarks {
+    when: OperatorSendsRemarks(subject)
+    ensures: TuningRequested(subject: subject)
+}
+
+rule TuningStarts {
+    when: TuningRequested(subject)
+    let github_access = access/Connection{service: github}
+    let drafts = TuningRemarks where review_run_id = subject.run_id and status = draft
+    let in_flight = Tunings where review_run_id = subject.run_id and is_active
+    let recent = TuningLaunches where fired_at + 1.hours > now
+    let review_settings = review/ReviewSettings{scope: installation}
+    let results_access = review/ResultsAccess{scope: installation}
+    requires: drafts.count > 0
+    requires: drafts.count <= config.max_remarks_per_batch
+    requires: subject.run != null and subject.run.head_sha != null
+    requires: github_access.is_usable
+    requires: review_settings.results_repository != null
+    requires: results_access.is_ready
+    requires: tuning_launcher_available(review_settings.launcher)
+    requires: in_flight.count = 0
+    requires: recent.count < config.fires_per_hour
+    let run_id = new_run_id(now)
+    ensures:
+        let launch = TuningLaunch.created(
+            run_id: run_id,
+            branch: tuning_branch(run_id),
+            review_run_id: subject.run_id,
+            pull_request: subject.pull_request,
+            head_sha: subject.run.head_sha,
+            results_repository: review_settings.results_repository,
+            brain_ref: review_settings.brain_ref,
+            status: firing,
+            fired_at: now)
+        for remark in drafts:
+            remark.status = sent
+            remark.batch = launch
+            remark.updated_at = now
+
+    @guidance
+        -- The run id is made like a review's: the UTC minute, then a few
+        -- random hex characters. The request handed to the launcher is the
+        -- OWLLIE_TUNE block Owllie documents: the reviewed pull request, the
+        -- commit the review read, the review's run id, the results
+        -- repository, the branch, the brain ref when there is one, and one
+        -- line per remark with what the remark holds but its excerpt. The
+        -- session reads the code from the reviewed repository itself.
+}
+
+rule TuningRefused {
+    when: TuningRequested(subject)
+    let github_access = access/Connection{service: github}
+    let drafts = TuningRemarks where review_run_id = subject.run_id and status = draft
+    let in_flight = Tunings where review_run_id = subject.run_id and is_active
+    let recent = TuningLaunches where fired_at + 1.hours > now
+    let review_settings = review/ReviewSettings{scope: installation}
+    let results_access = review/ResultsAccess{scope: installation}
+    requires:
+        drafts.count = 0
+        or drafts.count > config.max_remarks_per_batch
+        or subject.run = null
+        or subject.run.head_sha = null
+        or not github_access.is_usable
+        or review_settings.results_repository = null
+        or not results_access.is_ready
+        or not tuning_launcher_available(review_settings.launcher)
+        or in_flight.count > 0
+        or recent.count >= config.fires_per_hour
+    ensures:
+        if drafts.count = 0:
+            TuningRejected(reason: no_draft_remarks)
+        else if drafts.count > config.max_remarks_per_batch:
+            TuningRejected(reason: too_many_remarks)
+        else if subject.run = null or subject.run.head_sha = null:
+            TuningRejected(reason: head_unknown)
+        else if not github_access.is_usable:
+            TuningRejected(reason: github_unavailable)
+        else if review_settings.results_repository = null:
+            TuningRejected(reason: no_results_repository)
+        else if not results_access.is_ready:
+            TuningRejected(reason: results_repository_not_ready)
+        else if not tuning_launcher_available(review_settings.launcher):
+            TuningRejected(reason: launcher_unavailable)
+        else if in_flight.count > 0:
+            TuningRejected(reason: tuning_in_flight)
+        else:
+            TuningRejected(reason: fire_limit_reached)
+
+    @guidance
+        -- A refused batch sends nothing, and its remarks stay drafts.
+}
+
+rule TuningHandedToTheLauncher {
+    when: launch: TuningLaunch.created
+    let review_settings = review/ReviewSettings{scope: installation}
+    ensures: TuningFireRequested(launch: launch, launcher: review_settings.launcher)
+
+    @guidance
+        -- The tuning goes through the launcher the review settings name: its
+        -- own scheduled task (its own fire URL and token), or the Claude CLI
+        -- from the same clone of Owllie, asked to run the tuning instead of a
+        -- review.
+}
+
+rule TuningLaunchFired {
+    when: TuningLaunchAnswered(launch, session_url)
+    requires: launch.status = firing
+    ensures:
+        launch.status = fired
+        launch.session_url = session_url
+}
+
+rule TuningLaunchFailed {
+    when: TuningLaunchFailedToStart(launch, failure)
+    requires: launch.status = firing
+    ensures:
+        launch.status = refused
+        launch.refusal = failure
+
+    @guidance
+        -- The batch is kept, with its remarks sent: the operator sees that it
+        -- never started and why, and copies the remarks into new drafts to
+        -- send them again.
+}
+
+------------------------------------------------------------
+-- Rules -- following a tuning
+------------------------------------------------------------
+
+rule TuningBranchRead {
+    when: TuningBranchObserved(branch)
+    let known = TuningRun{run_id: branch.run_id}
+    ensures:
+        if exists known:
+            known.head = branch.head
+            known.state = branch.state
+            known.updated_at = branch.updated_at
+            known.failure = branch.failure
+            known.steps = branch.steps
+            known.summary_step = branch.summary_step
+            known.pull_request_url = branch.pull_request_url
+        else:
+            TuningRun.created(
+                run_id: branch.run_id,
+                branch: branch.name,
+                head: branch.head,
+                state: branch.state,
+                updated_at: branch.updated_at,
+                failure: branch.failure,
+                steps: branch.steps,
+                summary_step: branch.summary_step,
+                pull_request_url: branch.pull_request_url,
+                pull_request_is_draft: false,
+                pull_request_mergeable: false,
+                pull_request_checks_failing: false)
+
+    @guidance
+        -- Tuning branches are listed and read in the same reading as review
+        -- branches, under their own prefix, and a step's state is derived
+        -- from its file the same way. The pull request is the link of kind
+        -- pull_request the run's status gives.
+}
+
+rule TuningBranchGone {
+    when: TuningBranchesListed(names)
+    ensures:
+        for run in TuningRuns where not (branch in names):
+            not exists run
+}
+
+rule TuningPullRequestRead {
+    when: TuningPullRequestObserved(answer)
+    ensures:
+        answer.run.pull_request_state = answer.state
+        answer.run.pull_request_is_draft = answer.is_draft
+        answer.run.pull_request_mergeable = answer.mergeable
+        answer.run.pull_request_checks_failing = answer.checks_failing
+
+    @guidance
+        -- A tuning's pull request is read with each reading of the results
+        -- while it is open, and no more once it is merged or closed. It is
+        -- read with the operator's GitHub credential.
+}
+
+------------------------------------------------------------
+-- Rules -- cleaning up
+------------------------------------------------------------
+
+rule OperatorRemovesTuning {
+    when: OperatorRemovesTuning(tuning)
+    requires: not tuning.is_active
+    ensures:
+        if tuning.run != null:
+            review/ResultsBranchDeletionRequested(branch: tuning.run.branch)
+            not exists tuning.run
+        if tuning.launch != null:
+            not exists tuning.launch
+
+    @guidance
+        -- The remarks of the batch stay, sent, and can still be copied into
+        -- new drafts; the pull request on Owllie's repository is not
+        -- touched. Tunings are removed one by one, from their page: the
+        -- cleanup of old reviews leaves them alone.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant OneLaunchPerTuning {
+    for a in TuningLaunches:
+        for b in TuningLaunches:
+            a != b implies a.run_id != b.run_id
+}
+
+invariant SentRemarksBelongToABatch {
+    for remark in TuningRemarks:
+        (remark.status = sent) = (remark.batch != null)
+}
+
+invariant OneBatchReviewsOneRun {
+    for remark in TuningRemarks where batch != null:
+        remark.review_run_id = remark.batch.review_run_id
+}
+
+------------------------------------------------------------
+-- Surfaces -- the integrations
+------------------------------------------------------------
+
+surface TuningLauncherIntegration {
+    facing launcher: review/OwllieLauncher
+
+    exposes:
+        launcher.session_url
+        for launch in TuningLaunches where status = firing:
+            launch.pull_request
+            launch.head_sha
+            launch.review_run_id
+            launch.results_repository
+            launch.branch
+            launch.brain_ref
+            for remark in launch.remarks:
+                remark.id
+                remark.kind
+                remark.finding
+                remark.lines
+                remark.rule
+                remark.note
+                remark.proposed_severity
+
+    provides:
+        for answer in TuningLaunchAnswers:
+            TuningLaunchAnswered(answer.launch, answer.session_url)
+                when answer.failure = null
+            TuningLaunchFailedToStart(answer.launch, answer.failure)
+                when answer.failure != null
+
+    @guarantee NoCodeInTheRequest
+        -- The session is told the pull request, the commit, the review, the
+        -- results repository, the branch, the brain ref and the remarks, in
+        -- the request format Owllie documents. A remark travels with its
+        -- quote, never with its excerpt: the session reads the code from the
+        -- reviewed repository at that commit.
+}
+
+surface TuningResultsIntegration {
+    facing gateway: access/GithubGateway
+
+    exposes:
+        gateway.budget_remaining
+        review/review_settings.results_repository
+        for run in TuningRuns where pull_request_url != null:
+            run.pull_request_url
+
+    provides:
+        TuningBranchesListed(TuningBranches -> name)
+        for branch in TuningBranches:
+            TuningBranchObserved(branch)
+        for answer in TuningPullRequestAnswers:
+            TuningPullRequestObserved(answer)
+
+    @guarantee ReadOnly
+        -- Tuning branches and pull requests are read with the operator's
+        -- GitHub credential; nothing is written to Owllie's repository.
+}
+
+surface ReviewCommentsIntegration {
+    facing gateway: access/GithubGateway
+
+    exposes:
+        gateway.budget_remaining
+        for each in review/Reviews where is_done:
+            each.pull_request
+            each.run.head_sha
+
+    @guarantee CommentsArePlacedInTheReviewedDiff
+        -- The review comments of a reviewed pull request are read with the
+        -- operator's GitHub credential when the page of one of its done
+        -- reviews is opened, at most once per reading interval. A comment is
+        -- placed on the lines of the review's diff it was written on: as it
+        -- is when it was written on the commit the review read, and otherwise
+        -- only when the same lines, with the same text, are in that diff.
+        -- Replies in a thread and the author's own comments are left out.
+}

@@ -94,6 +94,14 @@
   [c request]
   (protocol/-blob c request))
 
+(defn review-comments
+  "`{:owner :name :number}` → `{:comments [{:id :author :path :line
+  :start-line :original-line :original-start-line :side :commit-id
+  :original-commit-id :in-reply-to :diff-hunk :body :url}]}`: the comments
+  reviewers wrote on lines of a pull request."
+  [c request]
+  (protocol/-review-comments c request))
+
 (defn delete-branch
   "`{:owner :name :branch}` → `{:deleted true}` or a failure. A branch already
   gone counts as deleted."

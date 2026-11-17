@@ -12,6 +12,7 @@
             [odato.owllie.interface :as owllie]
             [odato.review.interface :as review]
             [odato.time.interface :as t]
+            [odato.ui.code :as code]
             [odato.ui.markdown :as markdown]
             [odato.ui.parts :as parts]))
 
@@ -30,6 +31,21 @@
 (defn review-href
   ([run-id] (str "/owldesk/review/" run-id))
   ([run-id step] (str "/owldesk/review/" run-id "/" step)))
+
+(defn tuning-href
+  ([run-id] (str "/owldesk/tuning/" run-id))
+  ([run-id step] (str "/owldesk/tuning/" run-id "/" step)))
+
+(defn- query-string [params]
+  (str/join "&" (for [[k v] params]
+                  (str (java.net.URLEncoder/encode (str k) "UTF-8") "="
+                       (java.net.URLEncoder/encode (str v) "UTF-8")))))
+
+(defn remark-href
+  "The form of a new remark on a review: `params` say on what (`fingerprint`,
+  `file` `side` `line`, or `kind` general)."
+  [run-id params]
+  (str "/owldesk/review/" run-id "/remark?" (query-string params)))
 
 (defn- results-branch-url [sys branch]
   (when-let [{:keys [owner name]} (:results-repository (review/settings sys))]
@@ -239,7 +255,7 @@
   (let [[tone label] (step-tones state [:neutral (name state)])]
     (parts/chip label tone)))
 
-(defn- progress-card [sys r]
+(defn- progress-card [sys r href]
   (let [steps (get-in r [:run :steps])
         heartbeat (get-in r [:run :updated-at])]
     [:section {:class parts/card}
@@ -261,7 +277,7 @@
                                   "border-sky-300 bg-sky-50 dark:border-sky-900 dark:bg-sky-950"
                                   "border-slate-200 dark:border-slate-800"))}
                (if (:result step)
-                 [:a {:href (review-href (:run-id r) (:id step)) :class "hover:underline"} (str (:title step))]
+                 [:a {:href (href (:run-id r) (:id step)) :class "hover:underline"} (str (:title step))]
                  [:span (str (:title step))])
                (step-chip (:state step))])]])])]))
 
@@ -304,9 +320,12 @@
                                         (when (= verdict value)
                                           " ring-2 ring-sky-500 dark:ring-sky-400"))}
                    label]])]
-    [:div {:class "flex flex-wrap gap-2"}
+    [:div {:class "flex flex-wrap items-center gap-2"}
      (button :relevant "Relevant")
-     (button :false-positive "False positive")]))
+     (button :false-positive "False positive")
+     [:a {:href (remark-href (:run-id r) {"fingerprint" fingerprint})
+          :class (str parts/button " text-xs")}
+      "Remark for Owllie…"]]))
 
 (defn- quote-block [text]
   [:pre {:class (str "overflow-x-auto rounded-lg bg-slate-50 px-3 py-2 font-mono text-xs "
@@ -316,9 +335,14 @@
 (def ^:private finding-status-tones
   {"kept" :green "merged" :violet "dropped" :amber "rejected" :neutral})
 
-(defn- finding-card [r finding judged]
+(defn- finding-card
+  "One finding: where it is, the code around it as the review's diff showed
+  it (its quote alone when its lines are not in the diff), what it says, and,
+  on a review page, the way to judge it and to remark on it."
+  [r finding {:keys [judged remarked review?]}]
   (let [{:keys [file line]} (when (map? (:location finding)) (:location finding))
-        status (when (map? (:status finding)) (:status finding))]
+        status (when (map? (:status finding)) (:status finding))
+        excerpt (when review? (review/finding-excerpt r finding))]
     [:article {:class "flex flex-col gap-2 rounded-xl border border-slate-200 p-4 dark:border-slate-800"}
      [:div {:class "flex flex-wrap items-center gap-2"}
       (severity-chip (:severity finding))
@@ -327,13 +351,17 @@
         [:span {:class parts/faint} (str/join ", " (map str (:tags finding)))])
       (when-let [value (:value status)]
         (parts/chip (str value) (finding-status-tones (str value) :neutral)))
-      (when-let [reason (:reason status)] [:span {:class parts/faint} (str reason)])]
-     (when (:quote finding) (quote-block (:quote finding)))
+      (when-let [reason (:reason status)] [:span {:class parts/faint} (str reason)])
+      (when (contains? remarked (:fingerprint finding))
+        (parts/chip "remark drafted" :violet))]
+     (cond
+       (seq excerpt) (code/excerpt-view excerpt)
+       (:quote finding) (quote-block (:quote finding)))
      (when (:body finding) (markdown/render (:body finding)))
      (when (and (map? (:fields finding)) (seq (:fields finding)))
        [:p {:class parts/faint}
         (interpose " · " (for [[k v] (:fields finding)] (str (name k) ": " v)))])
-     (when (and (string? (:fingerprint finding))
+     (when (and review? (string? (:fingerprint finding))
                 (contains? #{nil "kept" "merged"} (:value status)))
        (verdict-buttons r finding judged))]))
 
@@ -344,12 +372,18 @@
 
 (defn- block-view
   "One block of a step, by its type. A type not known here is shown as such."
-  [r judged block]
+  [r ctx block]
   (if-not (map? block)
     (unknown-block {:type nil :value block})
     (case (:type block)
       "markdown" (markdown/render (:text block))
       "code" (quote-block (:text block))
+      "diff" [:div {:class "flex flex-col gap-2"}
+              (when (:title block) [:span {:class parts/heading-text} (str (:title block))])
+              (when (:line-href ctx)
+                [:p {:class parts/faint}
+                 "A line number starts a missed remark on that line: something the review should have flagged."])
+              (code/diff-view (review/parse-diff (str (:text block))) {:line-href (:line-href ctx)})]
       "stats" [:div {:class "grid grid-cols-2 gap-2 sm:grid-cols-4"}
                (for [item (:items block) :when (map? item)]
                  (parts/stat {:label (str (:label item)) :count (:value item) :tone (tone (:tone item))}))]
@@ -368,14 +402,14 @@
                   (when (:title block) [:span {:class parts/heading-text} (str (:title block))])
                   (if (empty? (:items block))
                     [:p {:class parts/muted} "Nothing to report."]
-                    (for [item (:items block) :when (map? item)] (finding-card r item judged)))]
+                    (for [item (:items block) :when (map? item)] (finding-card r item ctx)))]
       (unknown-block block))))
 
-(defn- tabs [r current-id]
+(defn- tabs [r current-id href]
   [:nav {:class "flex flex-wrap gap-1 border-b border-slate-200 dark:border-slate-800"}
    (for [step (get-in r [:run :steps])]
      (if (:result step)
-       [:a {:href (review-href (:run-id r) (:id step))
+       [:a {:href (href (:run-id r) (:id step))
             :class (str "flex items-center gap-1.5 whitespace-nowrap px-3 py-2 text-sm "
                         (if (= current-id (:id step))
                           "border-b-2 border-slate-900 font-semibold dark:border-slate-100"
@@ -385,9 +419,8 @@
        [:span {:class "flex items-center gap-1.5 px-3 py-2 text-sm text-slate-400 dark:text-slate-600"}
         (str (:title step))]))])
 
-(defn- step-view [sys r step]
-  (let [result (:result step)
-        judged (review/judgements sys (:run-id r))]
+(defn- step-view [r step ctx]
+  (let [result (:result step)]
     (cond
       (nil? step) nil
       (nil? result)
@@ -409,7 +442,7 @@
        [:section {:class (str parts/card " flex flex-col gap-4 px-4 py-4")}
         (if (empty? (:blocks result))
           [:p {:class parts/muted} "Nothing to show."]
-          (for [block (:blocks result)] (block-view r judged block)))]])))
+          (for [block (:blocks result)] (block-view r ctx block)))]])))
 
 (defn- current-step
   "The step a page shows: the one asked for, or the summary step once it has
@@ -423,6 +456,208 @@
         (last (filter :result steps)))))
 
 (defn step-ids [r] (set (map :id (get-in r [:run :steps]))))
+
+;; ---------------------------------------------------------------- remarks
+
+(def kind-text
+  {:false-positive "False positive" :relevant "Relevant" :wrong-severity "Wrong severity"
+   :unclear "Unclear" :missed "Missed" :general "General"})
+
+(def ^:private kind-hints
+  {:false-positive "The finding should not have been raised. Say why, if you can: the session turns it into an exception."
+   :relevant "The finding is right: it becomes an example the rule must keep finding."
+   :wrong-severity "The finding is right, at the wrong severity."
+   :unclear "The text does not say what is wrong. Say what it should have said."
+   :missed "The review should have flagged these lines. Say what, and why."
+   :general "About the review as a whole: an agent too verbose, a topic nobody covers…"})
+
+(def ^:private kind-tones
+  {:false-positive :amber :relevant :green :wrong-severity :amber :unclear :sky :missed :red :general :neutral})
+
+(def remark-fault-text
+  {:invalid-kind "choose what the remark says"
+   :no-results "the review has no results to point into"
+   :finding-not-found "the review does not show that finding"
+   :lines-not-in-diff "those lines are not lines of the review's diff"
+   :note-required "this kind of remark needs a note"
+   :note-too-long (str "the note is longer than " (:max-note-length review/tuning-limits) " characters")
+   :severity-not-changed "propose a severity other than the finding's"
+   :not-a-draft "a sent remark no longer changes"
+   :no-such-remark "that remark is gone"
+   :not-sent "only a sent remark is copied"
+   :batch-not-given-up "its batch may still become a pull request"
+   :no-such-comment "that comment is no longer offered"})
+
+(def ^:private send-refusal-text
+  {:no-draft-remarks "No draft to send."
+   :too-many-remarks (str "More than " (:max-remarks-per-batch review/tuning-limits)
+                          " drafts: delete some, or send them in two batches.")
+   :head-unknown "The review's results do not say which commit it read: they were written before Owllie recorded it."
+   :github-unavailable "No valid GitHub credential."
+   :no-results-repository "No results repository is set: choose one in the settings."
+   :results-repository-not-ready "The results repository is not ready: check it in the settings."
+   :launcher-unavailable "No tuning launcher is configured: set OWLLIE_TUNE_FIRE_URL and OWLLIE_TUNE_FIRE_TOKEN, or OWLLIE_CLI_DIR."
+   :tuning-in-flight "A batch of this review is still being turned into a pull request."
+   :fire-limit-reached "The tuning scheduled task has taken all it accepts this hour."})
+
+(defn- lines-label [{:keys [file side line end-line]}]
+  (str file ":" line (when (and end-line (not= end-line line)) (str "-" end-line))
+       (when (= :old side) " (removed lines)")))
+
+(defn- send-blocker
+  "What would refuse a batch of this review before the operator asks."
+  [sys r drafts]
+  (let [in-force (review/settings sys)]
+    (cond
+      (empty? drafts) nil
+      (> (count drafts) (:max-remarks-per-batch review/tuning-limits)) (:too-many-remarks send-refusal-text)
+      (not (re-matches #"[0-9a-f]{40}" (str (get-in r [:run :head-sha])))) (:head-unknown send-refusal-text)
+      (not (access/usable? sys :github)) (:github-unavailable send-refusal-text)
+      (nil? (:results-repository in-force)) (:no-results-repository send-refusal-text)
+      (not (review/tune-launcher-available? sys (:launcher in-force))) (:launcher-unavailable send-refusal-text)
+      (some :active? (review/tunings-of sys (:run-id r))) (:tuning-in-flight send-refusal-text)
+      :else nil)))
+
+(def ^:private tuning-tones
+  {:starting [:sky "starting"] :running [:sky "running"] :stalled [:amber "stalled"]
+   :done [:green "done"] :failed [:red "failed"] :never-started [:red "never started"]
+   :unreadable [:neutral "unreadable"]})
+
+(defn- tuning-chip [tn]
+  (let [[tone label] (tuning-tones (:state tn) [:neutral (name (:state tn))])]
+    (parts/chip label tone)))
+
+(def ^:private mergeable-text
+  {"clean" [:green "ready to merge"] "dirty" [:red "conflicts"] "unstable" [:amber "checks failing"]
+   "blocked" [:amber "blocked"] "behind" [:amber "behind its base"] "draft" [:neutral "draft"]})
+
+(defn- pull-request-chips [{:keys [state draft mergeable-state]}]
+  (list
+   (case state
+     :merged (parts/chip "merged" :violet)
+     :closed (parts/chip "closed" :neutral)
+     :open (parts/chip (if draft "open · draft" "open") (if draft :neutral :green))
+     (parts/chip "not read yet" :neutral))
+   (when (and (= :open state) (not draft))
+     (when-let [[tone label] (mergeable-text (str mergeable-state))]
+       (parts/chip label tone)))))
+
+(defn- remark-summary
+  "One remark, as the remarks section lists it."
+  [r remark actions]
+  [:li {:class (str "flex flex-col gap-2 px-4 py-3 " separated)}
+   [:div {:class "flex flex-wrap items-center gap-2 text-sm"}
+    (parts/chip (kind-text (:kind remark)) (kind-tones (:kind remark) :neutral))
+    (when (:rule remark) [:span {:class "font-mono text-xs"} (:rule remark)])
+    (when (:lines remark) [:code {:class "font-mono text-xs"} (lines-label (:lines remark))])
+    (when-let [s (:proposed-severity remark)]
+      [:span {:class parts/faint} (str "→ " s)])
+    (when (:from-comment remark) [:span {:class parts/faint} "from a reviewer's comment"])
+    [:span {:class (str parts/faint " ml-auto")} actions]]
+   (when-let [obs (get-in remark [:finding :observation])]
+     [:details {:class "text-xs"}
+      [:summary {:class (str parts/faint " cursor-pointer")} "What the finding said"]
+      (markdown/render obs)])
+   (when (seq (:excerpt remark)) (code/excerpt-view (:excerpt remark)))
+   (when-not (str/blank? (:note remark))
+     [:p {:class "whitespace-pre-wrap text-sm"} (:note remark)])])
+
+(defn- post-button [action label & [{:keys [confirm danger]}]]
+  [:form {:method "post" :action action :class "inline"
+          :onsubmit (when confirm (str "return confirm('" confirm "')"))}
+   [:button {:type "submit" :class (str parts/button " text-xs" (when danger " text-rose-700 dark:text-rose-300"))}
+    label]])
+
+(defn remarks-outcome
+  "What the last batch sent answered. It sits outside `#owldesk-review`, so
+  the page patching itself leaves it on screen."
+  [outcome]
+  [:div {:id "owldesk-remarks-outcome"}
+   (when outcome
+     (if (:ok outcome)
+       (notice :ok "Remarks sent to Owllie. "
+               [:a {:href (tuning-href (:run-id outcome)) :class "font-medium underline"} "Follow the tuning"]
+               " — its branch appears within a minute or two.")
+       (notice :refused (get send-refusal-text (:refusal outcome) (parts/humanise (:refusal outcome))))))])
+
+(defn- remarks-section [sys r]
+  (let [run-id (:run-id r)
+        all (review/remarks sys run-id)
+        drafts (filter #(= :draft (:status %)) all)
+        sent (group-by :batch (filter #(= :sent (:status %)) all))
+        tunings (review/tunings-of sys run-id)
+        candidates (review/miss-candidates sys r)
+        blocker (send-blocker sys r drafts)
+        base (str "/owldesk/review/" run-id)]
+    [:section {:id "remarks" :class parts/card}
+     [:div {:class parts/card-heading}
+      [:h2 {:class parts/heading-text} "Remarks for Owllie"]
+      [:span {:class parts/faint}
+       (str (plural (count drafts) "draft") " · " (plural (count tunings) "batch") " sent")]]
+     [:div {:class "flex flex-col gap-3 px-4 py-3"}
+      [:p {:class parts/muted}
+       "Write what Owllie should learn from this review, then send every draft at once: "
+       "Owllie turns them into a pull request on its rules, with the code anonymized."]
+      [:div {:class "flex flex-wrap items-center gap-2"}
+       [:a {:href (remark-href run-id {"kind" "general"}) :class parts/button} "Add a general remark"]
+       (when (:run r)
+         [:a {:href (review-href run-id "inputs") :class parts/button} "Point at a miss in the diff"])]]
+     (if (empty? drafts)
+       [:p {:class (str "px-4 py-3 " parts/muted " " separated)} "No draft."]
+       [:ul
+        (for [d drafts]
+          (remark-summary r d
+                          (list [:a {:href (str base "/remarks/" (:id d)) :class (str parts/button " text-xs")} "Edit"]
+                                " "
+                                (post-button (str base "/remarks/" (:id d) "/delete") "Delete"
+                                             {:confirm "Delete this draft?" :danger true}))))])
+     (when (seq drafts)
+       [:form {:method "post" :action (str base "/send")
+               :data-on-submit (str "@post('" base "/send', {contentType: 'form'})")
+               :class (str "flex flex-wrap items-center gap-3 px-4 py-3 " separated)}
+        (when blocker (notice :warn blocker))
+        [:button {:type "submit" :class parts/primary-button :disabled (boolean blocker)}
+         (str "Send " (plural (count drafts) "draft") " to Owllie")]
+        [:span {:class parts/faint} "One batch, one pull request on Owllie's rules."]])
+     (when (seq candidates)
+       [:div {:class separated}
+        [:h3 {:class (str parts/heading-text " px-4 pt-3")} "Reviewers' comments where the review found nothing"]
+        [:ul
+         (for [c candidates]
+           [:li {:class (str "flex flex-col gap-1 px-4 py-2 " separated)}
+            [:div {:class "flex flex-wrap items-center gap-2 text-sm"}
+             [:span {:class "font-medium"} (str (:author c))]
+             (when (:by-operator c) (parts/chip "you" :sky))
+             [:code {:class "font-mono text-xs"} (lines-label (:lines c))]
+             [:a {:href (str (:url c)) :target "_blank" :rel "noreferrer" :class (str parts/faint " hover:underline")}
+              "on GitHub ↗"]
+             [:span {:class "ml-auto flex gap-2"}
+              (post-button (str base "/comments/" (:id c) "/draft") "Make it a missed remark")
+              (post-button (str base "/comments/" (:id c) "/dismiss") "Not a miss")]]
+            [:p {:class "whitespace-pre-wrap text-sm text-slate-600 dark:text-slate-300"} (str (:body c))]])]])
+     (when (seq tunings)
+       [:div {:class separated}
+        [:h3 {:class (str parts/heading-text " px-4 pt-3")} "Batches sent"]
+        [:ul
+         (for [tn tunings
+               :let [remarks (get sent (:run-id tn))]]
+           [:li {:class (str "flex flex-col gap-1 px-4 py-2 " separated)}
+            [:div {:class "flex flex-wrap items-center gap-2 text-sm"}
+             [:a {:href (tuning-href (:run-id tn)) :class "font-mono text-xs hover:underline"} (:run-id tn)]
+             (tuning-chip tn)
+             [:span {:class parts/faint} (plural (count remarks) "remark")]
+             (when-let [pr (:pull-request tn)]
+               (list [:a {:href (:url pr) :target "_blank" :rel "noreferrer" :class "text-sm underline"}
+                      "Pull request ↗"]
+                     (pull-request-chips pr)))]
+            (when (seq remarks)
+              [:details {:class "text-sm"}
+               [:summary {:class (str parts/muted " cursor-pointer")} "Its remarks"]
+               [:ul
+                (for [s remarks]
+                  (remark-summary r s (when (:given-up? tn)
+                                        (post-button (str base "/remarks/" (:id s) "/redraft")
+                                                     "Copy into a new draft"))))]])])]])]))
 
 (defn- asked-at [r] (or (:asked-at r) (get-in r [:launch :fired-at])))
 
@@ -488,7 +723,8 @@
 
 (defn review-page
   "One review in full: which run of its pull request it is, and when; where
-  it stands; then the view of one of its steps."
+  it stands; then the view of one of its steps; then the remarks the operator
+  writes for Owllie."
   [sys r {:keys [step]}]
   (let [runs (or (->> (review/by-pull-request sys)
                       (filter #(= (review/pull-request-key (:pull-request %))
@@ -497,7 +733,14 @@
                  [r])
         details (filter map? (get-in r [:run :process :details]))
         branch (or (get-in r [:run :branch]) (get-in r [:launch :branch]))
-        shown (current-step r step)]
+        shown (current-step r step)
+        run-id (:run-id r)
+        ctx {:judged (review/judgements sys run-id)
+             :remarked (set (keep #(get-in % [:finding :fingerprint])
+                                  (filter #(= :draft (:status %)) (review/remarks sys run-id))))
+             :review? true
+             :line-href (fn [path side n]
+                          (remark-href run-id {"file" path "side" (name side) "line" (str n)}))}]
     [:div {:id "owldesk-review" :class "flex flex-col gap-4"}
      [:section {:class parts/card}
       [:div {:class "flex flex-col gap-2 px-4 py-4"}
@@ -509,7 +752,7 @@
        [:div {:class "flex flex-wrap items-center gap-2 text-sm text-slate-500 dark:text-slate-400"}
         (state-chip r)
         (when-asked sys r)
-        [:span {:class "font-mono text-xs"} (:run-id r)]
+        [:span {:class "font-mono text-xs"} run-id]
         (for [{:keys [label value]} details] [:span (str label " " value)])]
        [:div {:class "flex flex-wrap gap-2"}
         (when-let [url (get-in r [:launch :session-url])]
@@ -517,8 +760,9 @@
         (when (and branch (get r :run))
           [:a {:href (results-branch-url sys branch) :target "_blank" :rel "noreferrer"
                :class parts/button} "Results branch ↗"])
+        [:a {:href "#remarks" :class parts/button} "Remarks for Owllie"]
         (when-not (review/active? r)
-          [:form {:method "post" :action (str "/owldesk/review/" (:run-id r) "/remove")
+          [:form {:method "post" :action (str "/owldesk/review/" run-id "/remove")
                   :onsubmit "return confirm('Delete this review and its results branch?')"}
            [:button {:type "submit" :class parts/button} "Remove"]])]]
       [:div {:class (str "flex flex-wrap items-center justify-between gap-3 px-4 py-3 " separated)}
@@ -527,10 +771,176 @@
      (schema-warning r)
      (state-banner sys r)
      (when (and (:run r) (not= :done (:state r)))
-       (progress-card sys r))
+       (progress-card sys r review-href))
      (when (seq (get-in r [:run :steps]))
-       (list (tabs r (:id shown))
-             (step-view sys r shown)))]))
+       (list (tabs r (:id shown) review-href)
+             (step-view r shown ctx)))
+     (remarks-section sys r)]))
+
+;; ------------------------------------------------------- writing a remark
+
+(defn- textarea [name value]
+  [:textarea {:name name :rows 5 :maxlength (:max-note-length review/tuning-limits)
+              :class (str parts/input " w-full font-sans")}
+   (str value)])
+
+(defn- severity-select [name value]
+  [:select {:name name :class parts/input}
+   [:option {:value ""} "—"]
+   (for [s review/severities]
+     [:option {:value s :selected (= s value)} s])])
+
+(defn remark-form-page
+  "The form a remark is written in: on a finding, on lines of the diff, or on
+  the review as a whole; or the form a draft is changed in. `values` are what
+  the operator typed, kept when the remark is refused."
+  [sys r {:keys [target remark values fault]}]
+  (let [run-id (:run-id r)
+        editing? (some? remark)
+        target (if editing?
+                 (cond
+                   (:finding remark) {:fingerprint (get-in remark [:finding :fingerprint])}
+                   (:lines remark) (:lines remark)
+                   :else {:kind "general"})
+                 target)
+        finding (when (:fingerprint target) (get (review/findings r) (:fingerprint target)))
+        lines (when-not (or (:fingerprint target) (= "general" (:kind target)))
+                (let [line (if (int? (:line target)) (:line target) (parse-long (str (:line target))))
+                      end (or (if (int? (:end-line target)) (:end-line target) (parse-long (str (:end-line target)))) line)]
+                  (when line {:file (str (:file target))
+                              :side (if (#{:old "old"} (:side target)) :old :new)
+                              :line line :end-line end})))
+        kinds (cond
+                editing? [(:kind remark)]
+                finding (vec (filter review/finding-remark-kinds review/remark-kinds))
+                lines [:missed]
+                :else [:general])
+        kind (or (review/parse-remark-kind (get values "kind")) (:kind remark) (first kinds))
+        value (fn [k from-remark] (if (contains? values k) (get values k) from-remark))
+        action (if editing? (str "/owldesk/review/" run-id "/remarks/" (:id remark)) (str "/owldesk/review/" run-id "/remarks"))]
+    [:div {:class "flex flex-col gap-4"}
+     [:div {:class "flex flex-wrap items-center gap-2"}
+      (parts/back-link (str (review-href run-id) "#remarks"))
+      [:span {:class parts/muted} (or (:title r) (pr-label (:pull-request r)))]]
+     (when fault (notice :refused (str "Refused: " (get remark-fault-text fault (parts/humanise fault)) ".")))
+     [:section {:class parts/card}
+      [:div {:class parts/card-heading}
+       [:h1 {:class parts/heading-text}
+        (cond editing? "Change a draft"
+              finding "A remark on a finding"
+              lines "A missed remark"
+              :else "A general remark")]]
+      [:div {:class "flex flex-col gap-3 px-4 py-3"}
+       (cond
+         finding (finding-card r finding {:review? true :judged {} :remarked #{}})
+         (and editing? (seq (:excerpt remark))) (code/excerpt-view (:excerpt remark))
+         lines (if-let [excerpt (seq (review/lines-excerpt r lines))]
+                 (code/excerpt-view excerpt)
+                 (notice :warn "Those lines are not lines of the review's diff.")))
+       [:form {:method "post" :action action :class "flex flex-col gap-3"}
+        (when finding [:input {:type "hidden" :name "fingerprint" :value (:fingerprint target)}])
+        (when (and lines (not editing?))
+          (list [:input {:type "hidden" :name "file" :value (:file lines)}]
+                [:input {:type "hidden" :name "side" :value (name (:side lines))}]
+                [:input {:type "hidden" :name "line" :value (str (:line lines))}]))
+        (if (> (count kinds) 1)
+          [:fieldset {:class "flex flex-col gap-2"}
+           [:legend {:class "text-sm font-medium"} "What the remark says"]
+           (for [k kinds]
+             [:label {:class "flex items-start gap-2 text-sm"}
+              [:input {:type "radio" :name "kind" :value (name k) :checked (= k kind) :class "mt-1 accent-sky-600"}]
+              [:span [:span {:class "font-medium"} (kind-text k)] " — "
+               [:span {:class parts/muted} (kind-hints k)]]])]
+          (list [:input {:type "hidden" :name "kind" :value (name kind)}]
+                [:p {:class parts/muted} (kind-hints kind)]))
+        (when (and lines (not editing?))
+          [:label {:class "flex flex-col gap-1"}
+           [:span {:class "text-sm font-medium"} "Up to line"]
+           [:input {:type "number" :name "end-line" :class (str parts/input " w-32")
+                    :value (str (value "end-line" (:end-line lines)))
+                    :min (:line lines)}]
+           [:span {:class parts/faint} (str "From line " (:line lines) " of " (:file lines)
+                                            (when (= :old (:side lines)) ", on the removed side") ".")]])
+        (when (or (some #{:wrong-severity} kinds) (= :missed kind))
+          [:label {:class "flex flex-col gap-1"}
+           [:span {:class "text-sm font-medium"}
+            (if (= :missed kind) "Severity it should have had (optional)" "Severity it should have (wrong severity only)")]
+           (severity-select "proposed-severity" (value "proposed-severity" (:proposed-severity remark)))])
+        (when (and (= :missed kind) (not editing?))
+          [:label {:class "flex flex-col gap-1"}
+           [:span {:class "text-sm font-medium"} "Rule that should have applied (optional)"]
+           [:input {:type "text" :name "rule" :class (str parts/input " w-64 font-mono")
+                    :placeholder "R-CONC-001, or empty for a rule to write"
+                    :value (str (value "rule" ""))}]])
+        [:label {:class "flex flex-col gap-1"}
+         [:span {:class "text-sm font-medium"} "Note"]
+         (textarea "note" (value "note" (:note remark)))
+         [:span {:class parts/faint}
+          "Your words about the code: what is wrong, or right, and why. Required for unclear, missed and general remarks."]]
+        [:div {:class "flex flex-wrap items-center gap-3"}
+         [:button {:type "submit" :class parts/primary-button} (if editing? "Save the draft" "Keep as a draft")]
+         [:span {:class parts/faint} "Nothing is sent until you send the review's drafts."]]]]]]))
+
+;; ----------------------------------------------------------- one tuning
+
+(defn- tuning-header [sys tn]
+  (let [review-run-id (:review-run-id tn)
+        branch (or (get-in tn [:run :branch]) (get-in tn [:launch :branch]))]
+    [:section {:class parts/card}
+     [:div {:class "flex flex-col gap-2 px-4 py-4"}
+      [:div {:class "flex flex-wrap items-center gap-2"}
+       (parts/back-link (if review-run-id (str (review-href review-run-id) "#remarks") "/owldesk"))
+       (when-let [pr (get-in tn [:launch :pull-request])]
+         [:a {:href (pr-url pr) :target "_blank" :rel "noreferrer" :class (str parts/muted " hover:underline")}
+          (str "remarks on " (pr-label pr))])]
+      [:h1 {:class "text-xl font-semibold"} (or (:title tn) (str "Tuning " (:run-id tn)))]
+      [:div {:class "flex flex-wrap items-center gap-2 text-sm text-slate-500 dark:text-slate-400"}
+       (tuning-chip tn)
+       [:span {:class "font-mono text-xs"} (:run-id tn)]
+       (when-let [h (seq (get-in tn [:run :headline]))]
+         [:span {:class "tabular-nums"}
+          (interpose " · " (for [{:keys [label value]} h] (str value " " label)))])]
+      [:div {:class "flex flex-wrap items-center gap-2"}
+       (when-let [pr (:pull-request tn)]
+         (list [:a {:href (:url pr) :target "_blank" :rel "noreferrer" :class parts/primary-button}
+                "Pull request on Owllie ↗"]
+               (pull-request-chips pr)))
+       (when-let [url (get-in tn [:launch :session-url])]
+         [:a {:href url :target "_blank" :rel "noreferrer" :class parts/button} "Claude session ↗"])
+       (when (and branch (:run tn))
+         [:a {:href (results-branch-url sys branch) :target "_blank" :rel "noreferrer" :class parts/button}
+          "Results branch ↗"])
+       (when-not (:active? tn)
+         [:form {:method "post" :action (str "/owldesk/tuning/" (:run-id tn) "/remove")
+                 :onsubmit "return confirm('Delete this tuning and its results branch? Its pull request stays.')"}
+          [:button {:type "submit" :class parts/button} "Remove"]])]
+      (when-let [pr (:pull-request tn)]
+        (when (and (= :open (:state pr)) (:draft pr))
+          [:p {:class parts/muted}
+           "Opened as a draft: the session found a regression, a remark not met on the real diff, or a remark it did not apply. Its summary says which."]))]]))
+
+(defn tuning-page
+  "One tuning in full: where it stands, its pull request, then the view of
+  one of its steps, read like a review's."
+  [sys tn {:keys [step]}]
+  (let [shown (current-step tn step)
+        sent (when-let [rid (:review-run-id tn)]
+               (filter #(= (:run-id tn) (:batch %)) (review/remarks sys rid)))]
+    [:div {:id "owldesk-tuning" :class "flex flex-col gap-4"}
+     (tuning-header sys tn)
+     (state-banner sys tn)
+     (when (and (:run tn) (not= :done (:state tn)))
+       (progress-card sys tn tuning-href))
+     (when (seq (get-in tn [:run :steps]))
+       (list (tabs tn (:id shown) tuning-href)
+             (step-view tn shown {})))
+     (when (seq sent)
+       [:section {:class parts/card}
+        [:div {:class parts/card-heading}
+         [:h2 {:class parts/heading-text} "The remarks it was sent"]
+         [:span {:class parts/faint} (plural (count sent) "remark")]]
+        [:ul (for [[i s] (map-indexed vector sent)]
+               (remark-summary nil s [:span {:class "font-mono"} (str "r" (inc i))]))]])]))
 
 ;; ---------------------------------------------------------------- settings
 
@@ -591,8 +1001,11 @@
         [:ul {:class "flex flex-col gap-1"}
          (credential-line "OWLLIE_FIRE_URL / OWLLIE_FIRE_TOKEN" (review/launcher-available? sys :scheduled-task)
                           "copy them from the scheduled task's API trigger")
+         (credential-line "OWLLIE_TUNE_FIRE_URL / OWLLIE_TUNE_FIRE_TOKEN"
+                          (review/tune-launcher-available? sys :scheduled-task)
+                          "the owllie-tune scheduled task's API trigger, to send remarks to Owllie")
          (credential-line "OWLLIE_CLI_DIR" (review/launcher-available? sys :claude-cli)
-                          "a clone of Owllie, with the Claude CLI signed in")
+                          "a clone of Owllie, with the Claude CLI signed in; it runs reviews and tunings")
          (credential-line "OWLLIE_RESULTS_TOKEN" (review/writer-available? sys)
                           "needed to delete results branches")]]
        [:div {:class "grid gap-4 md:grid-cols-2"}

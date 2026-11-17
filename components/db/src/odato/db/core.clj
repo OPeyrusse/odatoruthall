@@ -43,7 +43,13 @@
    :review-settings/scope     {:db/unique :db.unique/identity}
    :review-launch/run-id      {:db/unique :db.unique/identity}
    :feedback/id               {:db/unique :db.unique/identity}
-   :feedback/agents           {:db/cardinality :db.cardinality/many}})
+   :feedback/agents           {:db/cardinality :db.cardinality/many}
+
+   ;; Tuning — the operator's remarks on a review, the batches sent to
+   ;; Owllie, and the reviewers' comments dismissed as candidate misses.
+   :remark/id                 {:db/unique :db.unique/identity}
+   :tuning-launch/run-id      {:db/unique :db.unique/identity}
+   :dismissed-comment/id      {:db/unique :db.unique/identity}})
 
 (def volatile-schema
   "What dies with the process."
@@ -81,7 +87,13 @@
    :results-polling/scope     {:db/unique :db.unique/identity}
    :review-run/id             {:db/unique :db.unique/identity}
    :review-removed/run-id     {:db/unique :db.unique/identity}
-   :review-pr/ident           {:db/unique :db.unique/identity}})
+   :review-pr/ident           {:db/unique :db.unique/identity}
+
+   ;; What the tuning branches say, the pull requests they opened on Owllie,
+   ;; and the reviewers' comments of the pull requests reviewed.
+   :tuning-run/id             {:db/unique :db.unique/identity}
+   :tuning-pr/url             {:db/unique :db.unique/identity}
+   :review-comments/ident     {:db/unique :db.unique/identity}})
 
 ;; ------------------------------------------------------------- persistence
 

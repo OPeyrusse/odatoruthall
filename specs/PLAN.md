@@ -53,7 +53,8 @@ dependency order — producers before consumers.
 | `specs/worklog/discovery.allium` | The day scan: the GitHub and Jira sources, the queue, attribution of an activity to an issue key, quota waits, what a scan may and may not touch | `access`, `work-item`, `worklog` |
 | `specs/worklog/timesheet.allium` | Surfaces: the five-day window with its totals, one day in detail with its loose ends, the persistence guarantee | all three |
 | `specs/owldesk/review.allium` | Automated reviews run by Owllie: the review settings and the results repository check, launching a review, reading its results branch, the derived state of a review, judging findings, cleanup | `access`, `config` |
-| `specs/owldesk/owldesk.allium` | Surfaces: every review grouped by pull request, one review in full, the review settings panel | `access`, `config`, `review` |
+| `specs/owldesk/tuning.allium` | The operator's remarks on a review for Owllie: drafting, editing and sending them in one batch, the tuning run read from its own branch, its pull request on Owllie's rules and merging it | `access`, `config`, `review` |
+| `specs/owldesk/owldesk.allium` | Surfaces: every review grouped by pull request, one review in full with its remarks section, one tuning in full, the review settings panel | `access`, `config`, `review`, `tuning` |
 
 Rationale for the split: `pull-request` is pure classification and is the file
 tests will hammer hardest; `collection` is where every failure mode and
@@ -323,6 +324,37 @@ These settle worklog:
   without owldesk changing.
 - **Timeouts are spec constants** (start timeout, stall threshold, reading
   intervals), to be tuned once real runs have been timed.
+
+## 7ter. owldesk tuning — decisions taken
+
+- **Remarks are drafts, gathered per review, sent in one batch.** Six kinds:
+  false positive, relevant, wrong severity and unclear on a finding; missed on
+  lines of the diff; general on the review. A sent remark never changes; to
+  send it again, the operator copies it into a new draft.
+- **One batch, one tuning run, one pull request on Owllie.** The request is
+  Owllie's `OWLLIE_TUNE v1` (`shared/tune-layout.md` there). It carries the
+  remarks and the commit the review read, never the code: the session reads
+  the code from the reviewed repository, anonymizes and generalizes it, and
+  pushes no reviewed code to Owllie's repository.
+- **A tuning is read like a review**, from its own branch `tune/<run id>` of
+  the results repository, with the same reader. The branch names the pull
+  request; the pull request is then read until it is merged or closed.
+- **Merging happens on GitHub.** owldesk links the pull request and says its
+  state (draft, conflicting, checks failing); it never writes to Owllie's
+  repository.
+- **Misses are diagnosed before anything changes.** A missed remark points at
+  lines of the diff on either side (a miss outside the diff at the lines that
+  cause it) and may say the severity it should have had. Reviewers' comments
+  on the pull request that fall where the review found nothing are offered as
+  candidate misses, never drafted on their own. Owllie tells a miss found and
+  filtered out, an agent not run, a rule not applied, a rule too narrow, no
+  rule and a topic out of every agent's scope apart; only a rule not applied,
+  a rule too narrow and no rule lead to a change of the rules or the agents.
+- **The code comes from the review's diff.** Owllie writes the diff it read
+  as a `diff` block of the inputs step, and the commit it read in
+  `process.json`. owldesk shows findings in context from that diff, lets the
+  operator point a missed remark at its lines, and copies the excerpt into the
+  remark so it outlives the branch.
 
 ## 8. Questions still open
 

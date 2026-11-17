@@ -301,7 +301,9 @@ query($q: String!, $cursor: String) {
                                :state (pull-request-state body)
                                :closed-at (t/parse-instant (:closed_at body))
                                :head-sha (get-in body [:head :sha])
-                               :url (:html_url body)}})))
+                               :url (:html_url body)
+                               :draft (boolean (:draft body))
+                               :mergeable-state (:mergeable_state body)}})))
 
 (defn- branches [c {:keys [prefix] :as request}]
   (let [response (http/request (:api c)
@@ -335,6 +337,40 @@ query($q: String!, $cursor: String) {
                            (decode-base64 (:content body))
                            (str (:content body)))})))
 
+(def ^:private review-comment-pages
+  "Review comments are read 100 at a time, and no further than this: a pull
+  request with more is not one whose misses anyone sifts by hand."
+  3)
+
+(defn- ->review-comment [c]
+  {:id (str (:id c))
+   :author (get-in c [:user :login])
+   :path (:path c)
+   :line (:line c)
+   :start-line (:start_line c)
+   :original-line (:original_line c)
+   :original-start-line (:original_start_line c)
+   :side (:side c)
+   :commit-id (:commit_id c)
+   :original-commit-id (:original_commit_id c)
+   :in-reply-to (some-> (:in_reply_to_id c) str)
+   :diff-hunk (:diff_hunk c)
+   :body (:body c)
+   :url (:html_url c)})
+
+(defn- review-comments [c {:keys [number] :as request}]
+  (loop [page 1 comments []]
+    (let [answer (rest-call c {:method :get
+                               :path (str (repo-path request) "/pulls/" number "/comments")
+                               :query {:per_page 100 :page page}}
+                            (fn [body _] {:items (if (sequential? body) body [])}))]
+      (if (or (:failure answer) (:retry answer))
+        answer
+        (let [comments (into comments (map ->review-comment) (:items answer))]
+          (if (and (= 100 (count (:items answer))) (< page review-comment-pages))
+            (recur (inc page) comments)
+            {:comments comments :budget (:budget answer)}))))))
+
 (defn- delete-branch [c {:keys [branch] :as request}]
   (let [answer (rest-call c {:method :delete
                              :path (str (repo-path request) "/git/refs/heads/" branch)}
@@ -363,7 +399,8 @@ query($q: String!, $cursor: String) {
   (-branches [this request] (branches this request))
   (-tree [this request] (tree this request))
   (-blob [this request] (blob this request))
-  (-delete-branch [this request] (delete-branch this request)))
+  (-delete-branch [this request] (delete-branch this request))
+  (-review-comments [this request] (review-comments this request)))
 
 (defn client
   [{:keys [token base-url timeout-ms]

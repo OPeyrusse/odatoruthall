@@ -41,3 +41,10 @@
   `{:write! (fn [branch files]) :now-fn (fn []) :step-ms n}`."
   [opts]
   (reviews/simulate opts))
+
+(defn simulated-tuning
+  "A tuning launcher's `on-fire` writing a tuning's branch step by step and
+  ending with a pull request on Owllie: the same options as
+  `simulated-review`."
+  [opts]
+  (reviews/simulate-tuning opts))

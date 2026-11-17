@@ -2,7 +2,7 @@
   "Reading the results branches.
 
   One request lists every branch under the review prefix with the commit it
-  points at. Only a branch whose commit moved is read again: its tree says
+  points at, and one more those under the tuning prefix. Only a branch whose commit moved is read again: its tree says
   which files changed, and only those blobs are fetched. A quiet results
   repository therefore costs one request per reading, which is what lets a
   running review be followed every minute without eating the GitHub budget
@@ -79,7 +79,13 @@
   (into {} (map (juxt :review-run/id identity))
         (db/all (db/db (volatile sys)) :review-run/id)))
 
-(defn- read-branch
+(defn tuning-runs
+  "Every tuning read from a `tune/` branch, keyed by run id."
+  [sys]
+  (into {} (map (juxt :tuning-run/id identity))
+        (db/all (db/db (volatile sys)) :tuning-run/id)))
+
+(defn read-branch
   "What changed on one branch since it was last read, as the run's new files,
   or `{:failure ...}`. The process is read first: it says which other files
   matter."
@@ -118,9 +124,71 @@
               owllie/parse-pull-request-url)
       {:repository {:owner (:owner branch) :name (:name branch)} :number (:number branch)}))
 
+(def ^:private kinds
+  "The two kinds of branch the results repository holds, and where what each
+  says is kept: a review's run, and a tuning's (specs/owldesk/tuning.allium,
+  read in the same reading)."
+  {:review {:prefix owllie/branch-prefix
+            :parse owllie/parse-branch-name
+            :known runs
+            :attr (fn [k] (keyword "review-run" (name k)))
+            :extra (fn [branch files]
+                     (let [pr (pull-request-of branch files)]
+                       {:review-run/owner (get-in pr [:repository :owner])
+                        :review-run/name (get-in pr [:repository :name])
+                        :review-run/number (:number pr)}))}
+   :tuning {:prefix owllie/tune-branch-prefix
+            :parse owllie/parse-tune-branch-name
+            :known tuning-runs
+            :attr (fn [k] (keyword "tuning-run" (name k)))
+            :extra (constantly {})}})
+
+(defn- read-kind!
+  "Reads the branches of one kind: `{:changed bool}`, or `{:failure ...}` when
+  they cannot be listed."
+  [sys repository {:keys [prefix parse known attr extra]}]
+  (let [listed (github/branches (:github sys) (assoc repository :prefix prefix))]
+    (settings/observe-budget! sys listed)
+    (if (or (:failure listed) (:retry listed))
+      {:failure (or (:failure listed) :budget-exhausted)}
+      (let [known (known sys)
+            ;; The parsed name may carry the repository's `:name`: the
+            ;; branch's own name is kept apart as `:branch`.
+            branches (keep (fn [b] (when-let [parsed (parse (:name b))]
+                                     (assoc parsed :branch (:name b) :sha (:sha b))))
+                           (:branches listed))
+            listed-ids (set (map :run-id branches))
+            ;; A run removed here may still be listed for a moment (a reading
+            ;; that began before the deletion, GitHub's own lag): it must not
+            ;; come back. Once its branch is no longer listed, the mark has
+            ;; done its work.
+            removed (set (map :review-removed/run-id
+                              (db/all (db/db (volatile sys)) :review-removed/run-id)))
+            branches (remove (comp removed :run-id) branches)
+            gone (remove (comp listed-ids key) known)
+            changed (atom (boolean (seq gone)))]
+        (doseq [branch branches
+                :let [previous (get known (:run-id branch))]
+                :when (not= (:sha branch) (get previous (attr :head)))]
+          (let [files (read-branch sys repository branch (get previous (attr :files)))]
+            (if (:failure files)
+              (log/warn "results branch" (:branch branch) "could not be read:" (:failure files))
+              (do (reset! changed true)
+                  (db/put! (volatile sys) (attr :id) (:run-id branch)
+                           (merge {(attr :branch) (:branch branch)
+                                   (attr :head) (:sha branch)
+                                   (attr :files) files
+                                   (attr :read-at) (now sys)}
+                                  (extra branch files)))))))
+        (when (seq gone)
+          (db/transact! (volatile sys)
+                        (for [[_ run] gone] (db/retract-entity (:db/id run)))))
+        {:changed @changed :listed listed-ids}))))
+
 (defn read!
   "ResultsBranchRead / ResultsBranchGone for every branch of the results
-  repository. Answers what happened: `:read`, or why nothing was read."
+  repository, reviews and tunings alike. Answers what happened: `:read`, or
+  why nothing was read."
   [sys]
   (let [repository (:results-repository (settings/current sys))]
     (cond
@@ -131,67 +199,39 @@
       :else
       (try
         (events/publish! (:bus sys) {:type :review/reading})
-        (let [listed (github/branches (:github sys) (assoc repository :prefix owllie/branch-prefix))]
-          (settings/observe-budget! sys listed)
-          (if (or (:failure listed) (:retry listed))
+        (let [reviews (read-kind! sys repository (:review kinds))
+              tunings (when-not (:failure reviews) (read-kind! sys repository (:tuning kinds)))
+              failure (or (:failure reviews) (:failure tunings))]
+          (if failure
             (do (db/put! (volatile sys) :results-polling/scope :installation
-                         {:results-polling/failure (or (:failure listed) :budget-exhausted)})
-                (events/publish! (:bus sys) {:type :review/results-unreadable
-                                             :failure (:failure listed)})
+                         {:results-polling/failure failure})
+                (events/publish! (:bus sys) {:type :review/results-unreadable :failure failure})
                 :unreadable)
-            (let [known (runs sys)
-                  ;; The parsed name carries the repository's `:name`: the
-                  ;; branch's own name is kept apart as `:branch`.
-                  branches (keep (fn [b] (when-let [parsed (owllie/parse-branch-name (:name b))]
-                                           (assoc parsed :branch (:name b) :sha (:sha b))))
-                                 (:branches listed))
-                  listed-ids (set (map :run-id branches))
-                  ;; A review removed here may still be listed for a moment
-                  ;; (a reading that began before the deletion, GitHub's own
-                  ;; lag): it must not come back. Once its branch is no longer
-                  ;; listed, the mark has done its work.
-                  removed (set (map :review-removed/run-id
-                                    (db/all (db/db (volatile sys)) :review-removed/run-id)))
-                  branches (remove (comp removed :run-id) branches)
-                  _ (when-let [done (seq (remove listed-ids removed))]
-                      (db/transact! (volatile sys)
-                                    (for [id done
-                                          :let [eid (db/lookup (db/db (volatile sys))
-                                                               :review-removed/run-id id)]
-                                          :when eid]
-                                      (db/retract-entity eid))))
-                  gone (remove (comp listed-ids key) known)
-                  changed (atom (boolean (seq gone)))]
-              (doseq [branch branches
-                      :let [previous (get known (:run-id branch))]
-                      :when (not= (:sha branch) (:review-run/head previous))]
-                (let [files (read-branch sys repository branch (:review-run/files previous))]
-                  (if (:failure files)
-                    (log/warn "results branch" (:branch branch) "could not be read:" (:failure files))
-                    (let [pr (pull-request-of branch files)]
-                      (reset! changed true)
-                      (db/put! (volatile sys) :review-run/id (:run-id branch)
-                               {:review-run/branch (:branch branch)
-                                :review-run/head (:sha branch)
-                                :review-run/owner (get-in pr [:repository :owner])
-                                :review-run/name (get-in pr [:repository :name])
-                                :review-run/number (:number pr)
-                                :review-run/files files
-                                :review-run/read-at (now sys)})))))
-              (when (seq gone)
+            (let [listed (into (:listed reviews) (:listed tunings))
+                  removed (map :review-removed/run-id
+                               (db/all (db/db (volatile sys)) :review-removed/run-id))]
+              (when-let [done (seq (remove listed removed))]
                 (db/transact! (volatile sys)
-                              (for [[_ run] gone] (db/retract-entity (:db/id run)))))
+                              (for [id done
+                                    :let [eid (db/lookup (db/db (volatile sys)) :review-removed/run-id id)]
+                                    :when eid]
+                                (db/retract-entity eid))))
               (db/put! (volatile sys) :results-polling/scope :installation
                        {:results-polling/read-at (now sys)
                         :results-polling/failure nil})
-              (when @changed
+              (when (or (:changed reviews) (:changed tunings))
                 (events/publish! (:bus sys) {:type :review/results-read}))
               :read)))
         (finally
           (unlock! sys)
           (events/publish! (:bus sys) {:type :review/reading-ended}))))))
 
-(defn forget-run! [sys run-id]
+(defn forget-run!
+  "A run removed here: off the screen now, and kept off until its branch is no
+  longer listed. Reviews and tunings alike."
+  [sys run-id]
   (db/put! (volatile sys) :review-removed/run-id run-id {})
-  (when-let [eid (db/lookup (db/db (volatile sys)) :review-run/id run-id)]
+  (doseq [attr [:review-run/id :tuning-run/id]
+          :let [eid (db/lookup (db/db (volatile sys)) attr run-id)]
+          :when eid]
     (db/transact! (volatile sys) [(db/retract-entity eid)])))

@@ -6,7 +6,8 @@
   or a repository name becomes one ref component. Owllie refuses a request
   whose branch does not match its pull request, so both sides must encode the
   names the same way."
-  (:require [clojure.string :as str])
+  (:require [clojure.data.json :as json]
+            [clojure.string :as str])
   (:import (java.time Instant ZoneOffset)
            (java.time.format DateTimeFormatter)))
 
@@ -87,6 +88,40 @@
   (when-let [[_ y mo d h mi] (re-matches #"(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})Z-.*" (str run-id))]
     (try (.toEpochMilli (Instant/parse (str y "-" mo "-" d "T" h ":" mi ":00Z")))
          (catch Exception _ nil))))
+
+;; ------------------------------------------------------------------ tuning
+
+(def tune-branch-prefix "tune/")
+
+(defn tune-branch-name [run-id] (str tune-branch-prefix run-id))
+
+(def ^:private tune-branch-re (re-pattern (str "^tune/(" run-id-re ")$")))
+
+(defn parse-tune-branch-name
+  "A tuning's branch as `{:run-id}`; nil for a branch that is not one."
+  [s]
+  (when-let [[_ run-id] (re-matches tune-branch-re (str s))]
+    {:run-id run-id}))
+
+(defn- remark-line
+  "One remark as the single-line JSON Owllie's `shared/tune-layout.md` reads:
+  a line break in a note stays inside the JSON string."
+  [remark]
+  (str "REMARK=" (json/write-str remark :escape-slash false)))
+
+(defn tune-request-block
+  "The `OWLLIE_TUNE v1` block for one batch of remarks: `{:pull-request
+  :head-sha :review-run-id :results-repository :branch :brain-ref :remarks}`,
+  each remark a map already in Owllie's field names."
+  [{:keys [pull-request head-sha review-run-id results-repository branch brain-ref remarks]}]
+  (str "OWLLIE_TUNE v1\n"
+       "PR_URL=" (pull-request-url pull-request) "\n"
+       "HEAD_SHA=" head-sha "\n"
+       "REVIEW_RUN=" review-run-id "\n"
+       "RESULTS_REPO=" (:owner results-repository) "/" (:name results-repository) "\n"
+       "RUN_BRANCH=" branch "\n"
+       (when-not (str/blank? brain-ref) (str "BRAIN_BASE=" brain-ref "\n"))
+       (apply str (for [r remarks] (str (remark-line r) "\n")))))
 
 (defn request-block
   "The `OWLLIE_RUN v1` block for one run."

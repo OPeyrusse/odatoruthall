@@ -48,11 +48,17 @@
 
 (def ^:private session-url-re #"https://claude\.ai/code/(session_[A-Za-z0-9]+)")
 
+(defn skill-for
+  "The Owllie skill that runs a request: the tuning for an `OWLLIE_TUNE`
+  block, the review otherwise."
+  [request-text]
+  (if (str/starts-with? (str/triml (str request-text)) "OWLLIE_TUNE") "owllie-tune" "owllie-run"))
+
 (defrecord ClaudeCli [command dir timeout-ms]
   Launcher
   (-fire [_ request-text]
     (try
-      (let [prompt (str "Run the owllie-run skill with this request:\n" request-text)
+      (let [prompt (str "Run the " (skill-for request-text) " skill with this request:\n" request-text)
             process (-> (ProcessBuilder. ^java.util.List (vec (concat command ["--cloud" prompt])))
                         (.directory (io/file dir))
                         (.redirectErrorStream true)

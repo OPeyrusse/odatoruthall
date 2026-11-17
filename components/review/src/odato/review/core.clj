@@ -91,6 +91,27 @@
 (defn- run-state [status]
   (case (:state status) "running" :running "done" :done "failed" :failed nil))
 
+(defn branch-view
+  "What a run's branch says, from the files read off it: `{:branch :head
+  :read-at :files}`. Reviews and tunings are read the same way."
+  [{:keys [branch head read-at files]}]
+  (let [process (data files results/process-file)
+        status (data files results/status-file)
+        state (run-state status)]
+    {:branch branch
+     :head head
+     :read-at read-at
+     :process process
+     :schema (:schema process)
+     :status status
+     :state state
+     :updated-at (t/parse-instant (:updated_at status))
+     :error (when (map? (:error status)) (:error status))
+     :headline (filter map? (:headline status))
+     :links (filter map? (:links status))
+     :summary-step (:summary_step process)
+     :steps (steps process files state)}))
+
 (defn- run-view [run]
   (when run
     (let [files (:review-run/files run)
@@ -100,6 +121,7 @@
       {:branch (:review-run/branch run)
        :head (:review-run/head run)
        :read-at (:review-run/read-at run)
+       :head-sha (get-in process [:pull_request :head_sha])
        :process process
        :schema (:schema process)
        :status status
@@ -303,13 +325,14 @@
 ;; ------------------------------------------------------------------ polling
 
 (defn tick!
-  "ResultsReadDue: the branches are read at the active pace while a review is
-  in flight, and at the idle pace otherwise."
-  [sys]
+  "ResultsReadDue: the branches are read at the active pace while a review —
+  or, as `elsewhere-active?` says, a tuning — is in flight, and at the idle
+  pace otherwise."
+  [sys elsewhere-active?]
   (results/ensure-defaults! sys)
   (let [due (:results-polling/next-read-at (results/polling sys))]
     (when (<= (long (or due 0)) (now sys))
-      (let [interval (if (some active? (reviews sys))
+      (let [interval (if (or elsewhere-active? (some active? (reviews sys)))
                        (:active-read-interval-ms timing)
                        (:idle-read-interval-ms timing))]
         (db/put! (volatile sys) :results-polling/scope :installation
