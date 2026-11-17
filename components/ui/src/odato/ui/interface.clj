@@ -87,13 +87,18 @@
                            (owldesk/body sys {:outcome outcome})]))))
 
 (defn review-page
+  "One review. `outcomes` holds what asking for another run of its pull
+  request answered (`:launch`) and what sending its remarks answered
+  (`:remarks`), when there is one to say; both sit outside `#owldesk-review`,
+  so the page patching itself leaves them on screen."
   ([sys review step] (review-page sys review step nil))
-  ([sys review step outcome]
+  ([sys review step {:keys [launch remarks]}]
    (document (layout/page sys {:title (str "review " (:run-id review)) :section :owldesk}
                           [:div {:data-on-load (str "@get('/sse/owldesk/review/" (:run-id review)
                                                     (when step (str "/" step)) "')")
                                  :class "flex flex-col gap-4"}
-                           (owldesk/remarks-outcome outcome)
+                           (owldesk/launch-outcome launch)
+                           (owldesk/remarks-outcome remarks)
                            (owldesk/review-page sys review {:step step})]))))
 
 (defn remark-form-page

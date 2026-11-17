@@ -41,6 +41,12 @@
   [ms]
   (core/format-instant ms))
 
+(defn format-minute
+  "`2026-09-15 10:30 UTC` for epoch milliseconds, or nil: an instant as the
+  operator reads it."
+  [ms]
+  (core/format-minute ms))
+
 ;; ----------------------------------------------------------------- UTC days
 
 (defn utc-midnight-of
