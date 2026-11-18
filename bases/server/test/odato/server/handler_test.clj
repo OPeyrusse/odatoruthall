@@ -100,7 +100,13 @@
     (is (= 404 (:status (GET sys "/gitdesk/my/starred"))))))
 
 (deftest the-aging-count-has-its-page
-  (let [sys (installation)]
+  (let [sys (testing*/configured!
+             {:github (assoc-in github-script
+                                [:pull-requests :repository-pull-requests "acme/widget"]
+                                [(fix/observation {:number 1 :author "ada" :title "Ship it"
+                                                   :updated-at now
+                                                   :opened-at (- now (t/days 20))})])
+              :jira jira-script})]
     (collector/collect! sys :manual)
     (is (str/includes? (:body (GET sys "/gitdesk")) "href=\"/gitdesk/aging\""))
     (let [response (GET sys "/gitdesk/aging")]
