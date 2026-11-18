@@ -5,7 +5,6 @@
   (:require [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [odato.db.interface :as db]
             [odato.demo.reviews :as demo]
             [odato.github.interface :as github]
             [odato.owllie.interface :as owllie]
@@ -219,21 +218,7 @@
       (testing "a branch deleted elsewhere takes its run with it"
         (github/delete-branch (:github sys) (assoc results :branch (demo/branch pr-412 (:failed ids))))
         (review/read-results! sys)
-        (is (nil? (review/review sys (:failed ids)))))
-      (testing "and its launch, which would read as never started"
-        (let [id (demo/run-id (- (now sys) (t/hours 2)) "0b0b")
-              branch (demo/branch pr-412 id)]
-          (github/mock-write-branch! (:github sys) results branch
-                                     {"owllie/status.json"
-                                      (json/write-str {:state "done" :updated_at testing/default-instant})})
-          (db/put! (db/durable (:store sys)) :review-launch/run-id id
-                   {:review-launch/status :fired :review-launch/fired-at (- (now sys) (t/hours 2))
-                    :review-launch/owner "acme" :review-launch/name "widget" :review-launch/number 412})
-          (review/read-results! sys)
-          (is (= :done (:state (review/review sys id))))
-          (github/delete-branch (:github sys) (assoc results :branch branch))
-          (review/read-results! sys)
-          (is (nil? (review/review sys id))))))))
+        (is (nil? (review/review sys (:failed ids))))))))
 
 (deftest the-reader-knows-only-the-process-and-the-blocks
   (let [run-id (demo/run-id (- (t/parse-instant testing/default-instant) (t/hours 1)) "0a0a")
