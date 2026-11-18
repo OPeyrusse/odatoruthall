@@ -113,6 +113,12 @@
       ;; --------------------------------------------------------- gitdesk
       [:get ["gitdesk"]] (html (ui/gitdesk-page sys))
 
+      [:get ["gitdesk" "aging"]] (html (ui/aging-page sys))
+
+      [:get ["sse" "gitdesk" "aging"]]
+      (sse/stream sys request {:relevant? sse/gitdesk-event?
+                               :fragment-fn ui/aging-fragment})
+
       [:post ["gitdesk" "refresh"]]
       (do (collector/start! sys :manual) (done request "/gitdesk"))
 

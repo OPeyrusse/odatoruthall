@@ -99,6 +99,15 @@
                          "Nobody is waiting on your review.")))
     (is (= 404 (:status (GET sys "/gitdesk/my/starred"))))))
 
+(deftest the-aging-count-has-its-page
+  (let [sys (installation)]
+    (collector/collect! sys :manual)
+    (is (str/includes? (:body (GET sys "/gitdesk")) "href=\"/gitdesk/aging\""))
+    (let [response (GET sys "/gitdesk/aging")]
+      (is (= 200 (:status response)))
+      (is (str/includes? (:body response) "Ship it"))
+      (is (str/includes? (:body response) "/sse/gitdesk/aging")))))
+
 (deftest each-tracked-member-has-its-page
   (let [sys (installation)]
     (collector/collect! sys :manual)

@@ -46,8 +46,7 @@ surface Shell {
     -- they are the shell's whole purpose and stay.
     related:
         gitdesk/MyWork
-        gitdesk/Monitoring
-        gitdesk/MergeTrain
+        gitdesk/Aging
         gitdesk/TeamWork
         collection/CollectionStatus
         worklog/Timesheet

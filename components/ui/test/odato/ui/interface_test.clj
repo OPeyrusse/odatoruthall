@@ -95,6 +95,18 @@
       (is (str/includes? body "Show 1 draft")))
     (is (nil? (ui/my-work-group "starred")))))
 
+(deftest the-aging-count-leads-to-the-page-listing-what-it-counts
+  (let [sys (installation)]
+    (collector/collect! sys :manual)
+    (let [dashboard (ui/gitdesk-fragment sys)]
+      (is (str/includes? dashboard "href=\"/gitdesk/aging\""))
+      (is (not (str/includes? dashboard "Monitoring")))
+      (is (not (str/includes? dashboard "Merge train"))))
+    (let [body (ui/aging-fragment sys)]
+      (is (str/includes? body "id=\"gitdesk-aging\""))
+      (is (str/includes? body "Ship it"))
+      (is (= "draftsAging" (shown-by body "A sketch")) "the draft is hidden"))))
+
 (deftest a-listed-pull-request-links-to-its-page-and-to-github
   (let [sys (installation)]
     (collector/collect! sys :manual)

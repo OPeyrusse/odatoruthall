@@ -3,7 +3,7 @@
 
   The interface is server-rendered HTML made dynamic with Datastar: the server
   already owns the snapshot and the worklog, so it renders them and pushes the
-  changes. Each dashboard has one fragment — `#gitdesk`, `#gitdesk-my-work`,
+  changes. Each dashboard has one fragment — `#gitdesk`, `#gitdesk-my-work`, `#gitdesk-aging`,
   `#gitdesk-member`, `#worklog`, `#worklog-day`, `#owldesk`, `#owldesk-review` — which a collection cycle or a day scan patches in place as
   its sources land."
   (:require [hiccup2.core :as h]
@@ -41,6 +41,11 @@
   (document (layout/page sys {:title (:label group) :section :gitdesk}
                          [:div {:data-on-load (str "@get('/sse/gitdesk/my/" (:slug group) "')")}
                           (gitdesk/my-work-page sys group)])))
+
+(defn aging-page [sys]
+  (document (layout/page sys {:title "aging" :section :gitdesk}
+                         [:div {:data-on-load "@get('/sse/gitdesk/aging')"}
+                          (gitdesk/aging-page sys)])))
 
 (defn tracked-member
   "The login, when it names a tracked member; nil otherwise."
@@ -142,6 +147,7 @@
 
 (defn gitdesk-fragment [sys] (render (gitdesk/body sys)))
 (defn my-work-fragment [sys group] (render (gitdesk/my-work-page sys group)))
+(defn aging-fragment [sys] (render (gitdesk/aging-page sys)))
 (defn member-fragment [sys member] (render (gitdesk/member-page sys member)))
 (defn worklog-fragment [sys] (render (worklog/body sys)))
 (defn day-fragment [sys day] (render (worklog/day-page sys day)))
