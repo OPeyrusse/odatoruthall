@@ -602,11 +602,13 @@ rule ResultsBranchGone {
     ensures:
         for run in ReviewRuns where not (branch in names):
             not exists run
+            not exists ReviewLaunch{run_id: run.run_id}
 
     @guidance
         -- A branch deleted elsewhere takes its run off the screen at the next
-        -- reading. Its launch, if there is one, then reads as never started
-        -- until the operator removes it.
+        -- reading, and its launch with it: kept, it would read as never
+        -- started. A launch that never produced a branch stays until the
+        -- operator removes it.
 }
 
 ------------------------------------------------------------

@@ -131,6 +131,7 @@
   {:review {:prefix owllie/branch-prefix
             :parse owllie/parse-branch-name
             :known runs
+            :launch :review-launch/run-id
             :attr (fn [k] (keyword "review-run" (name k)))
             :extra (fn [branch files]
                      (let [pr (pull-request-of branch files)]
@@ -140,13 +141,14 @@
    :tuning {:prefix owllie/tune-branch-prefix
             :parse owllie/parse-tune-branch-name
             :known tuning-runs
+            :launch :tuning-launch/run-id
             :attr (fn [k] (keyword "tuning-run" (name k)))
             :extra (constantly {})}})
 
 (defn- read-kind!
   "Reads the branches of one kind: `{:changed bool}`, or `{:failure ...}` when
   they cannot be listed."
-  [sys repository {:keys [prefix parse known attr extra]}]
+  [sys repository {:keys [prefix parse known attr extra launch]}]
   (let [listed (github/branches (:github sys) (assoc repository :prefix prefix))]
     (settings/observe-budget! sys listed)
     (if (or (:failure listed) (:retry listed))
@@ -182,7 +184,13 @@
                                   (extra branch files)))))))
         (when (seq gone)
           (db/transact! (volatile sys)
-                        (for [[_ run] gone] (db/retract-entity (:db/id run)))))
+                        (for [[_ run] gone] (db/retract-entity (:db/id run))))
+          ;; The launch of a run whose branch is gone goes with it: kept, it
+          ;; would read as a review that never started.
+          (let [durable (db/durable (:store sys))
+                eids (keep #(db/lookup (db/db durable) launch %) (map key gone))]
+            (when (seq eids)
+              (db/transact! durable (map db/retract-entity eids)))))
         {:changed @changed :listed listed-ids}))))
 
 (defn read!
