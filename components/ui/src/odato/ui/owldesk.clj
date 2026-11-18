@@ -173,6 +173,24 @@
 
 ;; ------------------------------------------------------------------ the list
 
+(defn- trash-button
+  "Deletes a review and its results branch, from the list: the same action as
+  the review page's Remove, drawn as a bin."
+  [r]
+  (when-not (review/active? r)
+    [:form {:method "post" :action (str "/owldesk/review/" (:run-id r) "/remove")
+            :class "ml-auto"
+            :onsubmit "return confirm('Delete this review and its results branch?')"}
+     [:button {:type "submit" :title "Delete this review" :aria-label "Delete this review"
+               :class (str parts/button " px-2!")}
+      [:svg {:viewBox "0 0 24 24" :class "h-4 w-4" :fill "none" :stroke "currentColor"
+             :stroke-width "2" :stroke-linecap "round" :stroke-linejoin "round"
+             :aria-hidden "true"}
+       [:path {:d "M3 6h18"}]
+       [:path {:d "M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"}]
+       [:path {:d "M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"}]
+       [:path {:d "M10 11v6M14 11v6"}]]]]))
+
 (defn- review-line [sys r]
   (let [now-ms (now sys)]
     [:li {:class "flex flex-wrap items-center gap-x-3 gap-y-1 py-1 text-sm"}
@@ -181,7 +199,8 @@
      [:span {:class parts/muted} "asked " (parts/relative-time now-ms (:asked-at r))]
      (headline r)
      (when-let [failure (get-in r [:run :error :code])]
-       [:span {:class parts/faint} failure])]))
+       [:span {:class parts/faint} failure])
+     (trash-button r)]))
 
 (defn- run-count [n]
   (if (> n 1)
