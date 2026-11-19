@@ -99,6 +99,21 @@
                          "Nobody is waiting on your review.")))
     (is (= 404 (:status (GET sys "/gitdesk/my/starred"))))))
 
+(deftest the-aging-count-has-its-page
+  (let [sys (testing*/configured!
+             {:github (assoc-in github-script
+                                [:pull-requests :repository-pull-requests "acme/widget"]
+                                [(fix/observation {:number 1 :author "ada" :title "Ship it"
+                                                   :updated-at now
+                                                   :opened-at (- now (t/days 20))})])
+              :jira jira-script})]
+    (collector/collect! sys :manual)
+    (is (str/includes? (:body (GET sys "/gitdesk")) "href=\"/gitdesk/aging\""))
+    (let [response (GET sys "/gitdesk/aging")]
+      (is (= 200 (:status response)))
+      (is (str/includes? (:body response) "Ship it"))
+      (is (str/includes? (:body response) "/sse/gitdesk/aging")))))
+
 (deftest each-tracked-member-has-its-page
   (let [sys (installation)]
     (collector/collect! sys :manual)

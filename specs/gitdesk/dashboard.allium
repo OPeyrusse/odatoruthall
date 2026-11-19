@@ -100,87 +100,45 @@ surface MyWorkGroupPage {
         -- page.
 }
 
-surface Monitoring {
-    -- The pull requests worth a second look: they have been open too long,
-    -- argued over, reworked too often, or approved and going nowhere.
+surface Aging {
+    -- The pull requests open longer than the aging threshold: a count on the
+    -- dashboard, and the page listing what it counts.
     facing operator: access/Operator
 
-    let watched = collection/snapshot.collected_pull_requests
-
-    let stuck = watched where is_stuck
-    let aging = watched where is_aging
-    let conflicting = watched where is_conflicting
-    let difficult = watched where is_difficult
-
-    let listed = by_recent_activity(stuck + aging + conflicting + difficult)
+    let aging = collection/snapshot.collected_pull_requests where is_aging
+    let listed = by_recent_activity(aging)
+    let drafts = aging where facts.is_draft
 
     exposes:
         operator.account_login
-        stuck.count
         aging.count
-        conflicting.count
-        difficult.count
+        drafts.count
         for pull_request in listed:
             pull_request.repository
             pull_request.number
             pull_request.facts.title
             pull_request.facts.author
-            pull_request.facts.comment_count
-            pull_request.facts.commits.count
+            pull_request.facts.is_draft
+            pull_request.facts.updated_at
             pull_request.age
             pull_request.head_check
-            pull_request.is_stuck
-            pull_request.is_aging
-            pull_request.is_conflicting
-            pull_request.is_difficult
+            pull_request.is_approved
 
     related:
         for pull_request in listed:
             PullRequestDetail(pull_request)
+
+    @guarantee CountLeadsToItsPage
+        -- The dashboard lists none of them: following the count opens the
+        -- page that lists every pull request it counts.
 
     @guarantee ThresholdsApplyOnSight
-        -- These groups are recomputed from the snapshot in hand whenever the
-        -- thresholds change; no collection is needed to see the new grouping.
+        -- The group is recomputed from the snapshot in hand whenever the
+        -- threshold changes; no collection is needed to see the new grouping.
 
     @guarantee DraftsAreCountedAndHidden
-        -- Drafts count towards every group, and are listed only once the
-        -- operator flips the list's draft toggle, as on MyWorkGroupPage.
-}
-
-surface MergeTrain {
-    -- What is on its way in, and what has just landed.
-    facing operator: access/Operator
-
-    let watched = collection/snapshot.collected_pull_requests
-
-    let merging = watched where is_merging
-    let just_merged = watched where is_recently_merged
-
-    let listed = by_recent_activity(merging + just_merged)
-
-    exposes:
-        operator.account_login
-        merging.count
-        just_merged.count
-        for pull_request in listed:
-            pull_request.repository
-            pull_request.number
-            pull_request.facts.title
-            pull_request.facts.author
-            pull_request.facts.auto_merge_enabled
-            pull_request.facts.merged_at
-            pull_request.head_check
-            pull_request.is_merging
-            pull_request.is_recently_merged
-
-    related:
-        for pull_request in listed:
-            PullRequestDetail(pull_request)
-
-    @guarantee MergedFadesWithTheWindow
-        -- A merged pull request stays in the merge train until it falls
-        -- outside the merged window, then leaves it without being collected
-        -- again.
+        -- Drafts count, and are listed only once the operator flips the
+        -- page's draft toggle, as on MyWorkGroupPage.
 }
 
 surface TeamWork {

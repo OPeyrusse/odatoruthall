@@ -23,7 +23,8 @@
                                   :updated-at now :opened-at (- now (t/days 20))
                                   :comment-count 20})
                 (fix/observation {:number 2 :author "ada" :title "A sketch"
-                                  :is-draft true :updated-at now})]}
+                                  :is-draft true :updated-at now
+                                  :opened-at (- now (t/days 20))})]}
               :mentions [] :review-requests [] :recently-merged []}}
     :jira {:login "ada"
            :issues {"ABC-1" {:summary "Ship it" :status "In Progress"
@@ -72,7 +73,6 @@
   (let [sys (installation)]
     (collector/collect! sys :manual)
     (let [body (ui/gitdesk-fragment sys)]
-      (is (str/includes? body "Ship it"))
       (is (not (str/includes? body "Drafts are counted above")) "no setting to go and change"))
     (let [body (ui/member-fragment sys "ada")]
       (is (nil? (shown-by body "Ship it")))
@@ -94,6 +94,19 @@
       (is (str/includes? body "display: none") "even before the toggle runs")
       (is (str/includes? body "Show 1 draft")))
     (is (nil? (ui/my-work-group "starred")))))
+
+(deftest the-aging-count-leads-to-the-page-listing-what-it-counts
+  (let [sys (installation)]
+    (collector/collect! sys :manual)
+    (let [dashboard (ui/gitdesk-fragment sys)]
+      (is (str/includes? dashboard "href=\"/gitdesk/aging\""))
+      (is (not (str/includes? dashboard "Monitoring")))
+      (is (not (str/includes? dashboard "Merge train"))))
+    (let [body (ui/aging-fragment sys)]
+      (is (str/includes? body "id=\"gitdesk-aging\""))
+      (is (str/includes? body "2 pull requests · 1 draft"))
+      (is (nil? (shown-by body "Ship it")))
+      (is (= "draftsAging" (shown-by body "A sketch")) "the draft is hidden"))))
 
 (deftest a-listed-pull-request-links-to-its-page-and-to-github
   (let [sys (installation)]

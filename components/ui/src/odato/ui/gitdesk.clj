@@ -145,20 +145,10 @@
 (defn- my-work-href [{:keys [slug]}]
   (str "/gitdesk/my/" slug))
 
-(defn- monitoring
-  "The pull requests worth a second look: open too long, argued over, reworked
-  too often, or approved and going nowhere."
+(defn- aging
+  "The open pull requests that have been open longer than the aging threshold."
   [pull-requests]
-  {:stuck (filterv :stuck? pull-requests)
-   :aging (filterv :aging? pull-requests)
-   :conflicting (filterv :conflicting? pull-requests)
-   :difficult (filterv :difficult? pull-requests)})
-
-(defn- merge-train
-  "What is on its way in, and what has just landed."
-  [pull-requests]
-  {:merging (filterv :merging? pull-requests)
-   :just-merged (filterv :recently-merged? pull-requests)})
+  (filterv :aging? pull-requests))
 
 (defn- listed
   "The lists the dashboard shows: most recent activity first, and each pull
@@ -308,6 +298,29 @@
                         empty
                         "No valid GitHub credential, so there is no \"me\" yet."))]))
 
+;; ------------------------------------------------------------------- aging
+
+(defn- aging-summary
+  "The count of aging pull requests. It leads to the page listing them."
+  [aging]
+  [:section {:class parts/card :id "aging"}
+   [:div {:class "px-4 py-3"}
+    [:a {:href "/gitdesk/aging" :class summary-item
+         :title "The pull requests open longer than the aging threshold"}
+     [:span {:class summary-label} "aging" arrow]
+     [:span {:class summary-count} (str (count aging))]]]])
+
+(defn aging-page
+  "The pull requests the aging count holds, in full: most recent activity
+  first, drafts once the operator shows them."
+  [sys]
+  (let [now-ms (t/now-ms (:clock sys))]
+    [:div {:id "gitdesk-aging" :class "flex flex-col gap-4"}
+     (collection-card now-ms "draftsAging"
+                      (list (parts/back-link "/gitdesk") [:h1 {:class page-title} "Aging"])
+                      (aging (collector/pull-requests sys))
+                      "Nothing has been open too long.")]))
+
 ;; -------------------------------------------------------------- team work
 
 (defn tracked-member
@@ -415,9 +428,7 @@
   (let [now-ms (t/now-ms (:clock sys))
         operator (access/operator-login sys)
         in-force (config/current sys)
-        pull-requests (collector/pull-requests sys)
-        watched (monitoring pull-requests)
-        train (merge-train pull-requests)]
+        pull-requests (collector/pull-requests sys)]
     [:div {:id "gitdesk" :class "flex flex-col gap-4"}
      (collection-status sys now-ms)
 
@@ -425,26 +436,7 @@
 
      (team-work in-force pull-requests)
 
-     (parts/stat-group
-      "Monitoring"
-      [{:label "stuck" :count (count (:stuck watched)) :tone :red}
-       {:label "aging" :count (count (:aging watched)) :tone :amber}
-       {:label "conflicting" :count (count (:conflicting watched)) :tone :amber}
-       {:label "difficult" :count (count (:difficult watched)) :tone :violet}])
-
-     (parts/stat-group
-      "Merge train"
-      [{:label "merging" :count (count (:merging train)) :tone :green}
-       {:label "just merged" :count (count (:just-merged train)) :tone :sky}])
-
-     [:div {:class "grid gap-4 lg:grid-cols-2"}
-      (pr-list "Monitoring" "draftsMonitoring" now-ms
-               (listed (:stuck watched) (:aging watched)
-                       (:conflicting watched) (:difficult watched))
-               "Nothing worth a second look.")
-      (pr-list "Merge train" "draftsMergeTrain" now-ms
-               (listed (:merging train) (:just-merged train))
-               "Nothing on its way in.")]]))
+     (aging-summary (aging pull-requests))]))
 
 ;; ------------------------------------------------------- one pull request
 
