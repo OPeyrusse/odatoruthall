@@ -1,6 +1,7 @@
 (ns odato.collector.core
   "Reading the snapshot, and the shapes the cycle writes into it."
-  (:require [odato.access.interface :as access]
+  (:require [clojure.string :as str]
+            [odato.access.interface :as access]
             [odato.config.interface :as config]
             [odato.db.interface :as db]
             [odato.events.interface :as events]
@@ -89,6 +90,20 @@
                            :last-seen-at (:pr/last-seen-at row)}
                           in-force at)))
          vec)))
+
+(defn- repository-of
+  "`owner/name` as GitHub compares it: without regard to case."
+  [repository]
+  (some-> (config/repository-key repository) str/lower-case))
+
+(defn tracked-pull-request-views
+  "The pull requests of the tracked repositories only. The mentions and the
+  review requests reach into any repository; what they bring from elsewhere
+  is the operator's business, not the team's."
+  [sys]
+  (let [tracked (into #{} (keep repository-of) (:repositories (config/current sys)))]
+    (filterv #(contains? tracked (repository-of (:repository %)))
+             (pull-request-views sys))))
 
 ;; ----------------------------------------------------------- the installation
 

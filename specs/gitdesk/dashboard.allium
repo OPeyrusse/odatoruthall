@@ -54,6 +54,11 @@ surface MyWork {
     @guarantee DraftsAreCounted
         -- A draft counts towards every group it belongs to.
 
+    @guarantee MyWorkReachesEveryRepository
+        -- The operator's own work is the one place that counts pull requests
+        -- outside the tracked repositories: a mention or a review request
+        -- elsewhere is still theirs to deal with.
+
     @guarantee AddressedMeansBackInMyCourt
         -- A pull request is *addressed* for the operator when they asked for
         -- changes and commits have landed since that they have not reviewed.
@@ -105,7 +110,7 @@ surface Aging {
     -- dashboard, and the page listing what it counts.
     facing operator: access/Operator
 
-    let aging = collection/snapshot.collected_pull_requests where is_aging
+    let aging = collection/snapshot.tracked_pull_requests where is_aging
     let listed = by_recent_activity(aging)
     let drafts = aging where facts.is_draft
 
@@ -131,6 +136,11 @@ surface Aging {
     @guarantee CountLeadsToItsPage
         -- The dashboard lists none of them: following the count opens the
         -- page that lists every pull request it counts.
+
+    @guarantee OnlyTrackedRepositories
+        -- Only the pull requests of the tracked repositories age here. One
+        -- that reached the snapshot through a mention or a review request
+        -- elsewhere is not counted, however old it is.
 
     @guarantee ThresholdsApplyOnSight
         -- The group is recomputed from the snapshot in hand whenever the
@@ -163,6 +173,9 @@ surface TeamWork {
     @guarantee MembersAreNotScopedToRepositories
         -- The member list is one general list: a member counts across every
         -- tracked repository, not per repository.
+        -- And across those only: what a member wrote or was handed in a
+        -- repository that is not tracked does not count, even when a mention
+        -- or a review request brought it into the snapshot.
 
     @guarantee MembersReadAgainstEachOther
         -- Each member is one bar on a shared axis: what they wrote runs to its
@@ -217,6 +230,10 @@ surface MemberWork {
 
     @guarantee OnlyTrackedMembers
         -- The page exists for a tracked member only; any other login has none.
+
+    @guarantee OnlyTrackedRepositories
+        -- The page lists the pull requests of the tracked repositories only,
+        -- as TeamWork counts them.
 
     @guarantee DraftsAreCountedAndHidden
         -- Drafts count towards both groups, and each group lists its own only

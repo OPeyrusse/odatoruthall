@@ -318,7 +318,7 @@
     [:div {:id "gitdesk-aging" :class "flex flex-col gap-4"}
      (collection-card now-ms "draftsAging"
                       (list (parts/back-link "/gitdesk") [:h1 {:class page-title} "Aging"])
-                      (aging (collector/pull-requests sys))
+                      (aging (collector/tracked-pull-requests sys))
                       "Nothing has been open too long.")]))
 
 ;; -------------------------------------------------------------- team work
@@ -409,7 +409,7 @@
   was handed to them."
   [sys member]
   (let [now-ms (t/now-ms (:clock sys))
-        {:keys [authored assigned]} (member-work member (collector/pull-requests sys))]
+        {:keys [authored assigned]} (member-work member (collector/tracked-pull-requests sys))]
     [:div {:id "gitdesk-member" :class "flex flex-col gap-4"}
      [:section {:class parts/card}
       [:div {:class "flex flex-col gap-1 px-4 py-4"}
@@ -428,15 +428,18 @@
   (let [now-ms (t/now-ms (:clock sys))
         operator (access/operator-login sys)
         in-force (config/current sys)
-        pull-requests (collector/pull-requests sys)]
+        pull-requests (collector/pull-requests sys)
+        ;; Only the operator's own work reaches beyond the tracked
+        ;; repositories: the team and the aging read those alone.
+        tracked (collector/tracked-pull-requests sys)]
     [:div {:id "gitdesk" :class "flex flex-col gap-4"}
      (collection-status sys now-ms)
 
      (my-work-summary (my-work operator pull-requests))
 
-     (team-work in-force pull-requests)
+     (team-work in-force tracked)
 
-     (aging-summary (aging pull-requests))]))
+     (aging-summary (aging tracked))]))
 
 ;; ------------------------------------------------------- one pull request
 
