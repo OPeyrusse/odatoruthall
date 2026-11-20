@@ -212,6 +212,30 @@
         (is (= 5 (occurrences body ">Scan</button>")))
         (is (= 5 (occurrences body "Submit to Jira")))))))
 
+(defn- task-shown-by
+  "The Datastar expression the task row for `k` is shown under."
+  [body k]
+  (let [row (re-find (re-pattern (str "<li[^>]*data-show=\"[^\"]*\"[^>]*>(?:(?!</li>).)*?" k))
+                     body)]
+    (second (re-find #"data-show=\"([^\"]*)\"" (str row)))))
+
+(deftest the-day-narrows-to-what-is-left-to-fill
+  (let [sys (installation)
+        day-starts-at (:starts-at (last (worklog/window sys)))]
+    (odato.work-item.interface/resolve! sys "ABC-2")
+    (worklog/name-task! sys day-starts-at "ABC-1")
+    (worklog/name-task! sys day-starts-at "ABC-2")
+    (let [abc-1 (first (filter #(= "ABC-1" (:work-item-key %))
+                               (:entries (worklog/day sys day-starts-at))))]
+      (worklog/enter-time! sys (:id abc-1) "1h"))
+    (let [body (ui/day-fragment sys (worklog/day sys day-starts-at))]
+      (is (str/includes? body "{onlyDrafted: false, onlyNoTime: false}")
+          "both toggles, off when the page opens")
+      (is (= "$onlyDrafted || !$onlyNoTime" (task-shown-by body "ABC-1"))
+          "a drafted task answers to its toggle")
+      (is (= "$onlyNoTime || !$onlyDrafted" (task-shown-by body "ABC-2"))
+          "a task with no time answers to the other"))))
+
 (deftest the-day-says-what-jira-holds
   (let [sys (installation)
         day-starts-at (:starts-at (last (worklog/window sys)))

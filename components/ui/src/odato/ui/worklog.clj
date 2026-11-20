@@ -292,13 +292,90 @@
   (str "mt-2 divide-y divide-slate-100 border-l-2 border-slate-200 pl-3 "
        "dark:divide-slate-800/60 dark:border-slate-800"))
 
+;; ------------------------------------------------------ what is left to fill
+;;
+;; Two toggles over the day's tasks narrow them to the ones still to be dealt
+;; with: the drafted ones, the ones with no time, or both. Neither on, every
+;; task shows. They are Datastar signals, off whenever the page is opened: they
+;; live in the page, so flipping them fetches nothing, and they are declared
+;; only if missing, so the day being patched in place leaves them as they were.
+
+(def ^:private task-rule "border-t border-slate-200 dark:border-slate-800")
+
+(def ^:private filter-signals
+  {:drafted "onlyDrafted" :no-time "onlyNoTime"})
+
+(defn entry-kind
+  "Which of the toggles a task answers to: drafted with time, drafted without
+  any, or neither."
+  [entry]
+  (when (= :drafted (:status entry))
+    (if (:filled? entry) :drafted :no-time)))
+
+(defn- shown-when
+  "The Datastar expression showing a task of `kind` under the toggles: shown by
+  its own toggle, or by none being on."
+  [kind]
+  (let [d (str "$" (:drafted filter-signals))
+        n (str "$" (:no-time filter-signals))]
+    (case kind
+      :drafted (str d " || !" n)
+      :no-time (str n " || !" d)
+      (str "!" d " && !" n))))
+
+(def ^:private toggle-off
+  (str "border-slate-300 bg-white text-slate-700 hover:bg-slate-50 "
+       "dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"))
+
+(def ^:private toggle-on
+  "border-sky-500 bg-sky-50 text-sky-700 dark:bg-sky-950 dark:text-sky-300")
+
+(def ^:private toggle-class
+  "A button whose colours say whether it is pressed: off until Datastar says
+  otherwise."
+  (str (-> parts/button
+           (str/replace "border-slate-300 bg-white " "")
+           (str/replace "text-slate-700 " "")
+           (str/replace " hover:bg-slate-50" "")
+           (str/replace "dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 " "")
+           (str/replace "dark:hover:bg-slate-700 " ""))
+       " " toggle-off))
+
+(defn- filter-toggle [kind label n]
+  (let [signal (filter-signals kind)]
+    [:button {:type "button" :class toggle-class
+              :data-on-click (str "$" signal " = !$" signal)
+              :data-class (str "{'" toggle-on "': $" signal ", '"
+                               toggle-off "': !$" signal "}")
+              :data-attr-aria-pressed (str "$" signal)
+              :aria-pressed "false"
+              :title (str "Show only the tasks " label)}
+     label [:span {:class "tabular-nums opacity-70"} (str n)]]))
+
+(defn- filter-toggles [counts]
+  [:div {:class "flex items-center gap-2"
+         :data-signals__ifmissing (str "{" (:drafted filter-signals) ": false, "
+                                       (:no-time filter-signals) ": false}")}
+   (filter-toggle :drafted "drafted" (get counts :drafted 0))
+   (filter-toggle :no-time "no time" (get counts :no-time 0))])
+
+(defn- nothing-left-when
+  "The expression showing the day has nothing under the toggles that are on."
+  [counts]
+  (let [d (str "$" (:drafted filter-signals))
+        n (str "$" (:no-time filter-signals))]
+    (str "(" d " || " n ") && "
+         "(" d " ? " (get counts :drafted 0) " : 0) + "
+         "(" n " ? " (get counts :no-time 0) " : 0) === 0")))
+
 (defn- task-block
   "One group per task: the ticket, the single time field, and the lines that
   led to it."
   [sys now-ms day scanning entry]
   (let [lines (discovery/lines-for sys (:starts-at day) (:work-item-key entry))
         key-class (str "font-semibold" (when scanning (str " " in-flight-text)))]
-    [:li {:class "px-4 py-3"}
+    [:li {:class (str task-rule " px-4 py-3")
+          :data-show (shown-when (entry-kind entry))}
      [:div {:class "flex flex-wrap items-start justify-between gap-3"}
       [:div {:class "min-w-0"}
        [:div {:class "flex flex-wrap items-center gap-2"}
@@ -383,7 +460,8 @@
         orphans (discovery/orphans-on sys (:starts-at day))
         last-scan (discovery/last-scan sys (:starts-at day))
         scanning (discovery/active-scan sys (:starts-at day))
-        days (worklog/window sys)]
+        days (worklog/window sys)
+        counts (frequencies (keep entry-kind (:entries day)))]
     [:div {:id "worklog-day" :class "flex flex-col gap-4"}
      [:section {:class (str parts/card (when (:busy-with day) " busy-glow"))}
       [:div {:class "flex flex-wrap items-center justify-between gap-3 px-4 py-4"}
@@ -424,8 +502,12 @@
               "Scanning again reads them once more.")])]
 
      [:section {:class parts/card}
-      [:div {:class parts/card-heading}
-       [:h2 {:class parts/heading-text} "Tasks"]
+      ;; Every task carries its own top rule, so the ones the toggles hide
+      ;; leave no stray line behind.
+      [:div {:class "flex flex-wrap items-center justify-between gap-3 px-4 py-3"}
+       [:div {:class "flex flex-wrap items-center gap-3"}
+        [:h2 {:class parts/heading-text} "Tasks"]
+        (filter-toggles counts)]
        (command-form {:action (str (day-href day) "/tasks")
                       :class "flex items-center gap-2"}
                      [:input {:class (str parts/input " w-40")
@@ -433,10 +515,14 @@
                               :aria-label "issue key"}]
                      [:button {:class parts/button :type "submit"} "Add task"])]
       (if (seq (:entries day))
-        [:ul {:class "divide-y divide-slate-200 dark:divide-slate-800"}
-         (map #(task-block sys now-ms day scanning %) (:entries day))]
-        (parts/empty-state
-         "No tasks on this day. Name one, or scan the day to find them."))]
+        (list
+         [:ul (map #(task-block sys now-ms day scanning %) (:entries day))]
+         [:div {:class task-rule :style "display: none"
+                :data-show (nothing-left-when counts)}
+          (parts/empty-state "Nothing left to fill on this day.")])
+        [:div {:class task-rule}
+         (parts/empty-state
+          "No tasks on this day. Name one, or scan the day to find them.")])]
 
      [:section {:class parts/card}
       [:div {:class parts/card-heading}
