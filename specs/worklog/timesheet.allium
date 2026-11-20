@@ -285,6 +285,15 @@ surface DaySheet {
         -- Each task says whether its time is drafted here, on its way, held by
         -- Jira, or refused -- and why it was refused.
 
+    @guarantee WhatIsLeftToFillIsOneClickAway
+        -- Two toggles narrow the day's tasks to the ones still to deal with:
+        -- the drafted ones, the ones with no time, or both at once. With
+        -- neither on, every task shows. Each says how many tasks it answers
+        -- to, and the day says so when none is left under the toggles that
+        -- are on. They are off whenever the page is opened, flipping them
+        -- fetches nothing, and the day being patched in place leaves them as
+        -- the operator set them.
+
     @guarantee WhatJiraHoldsIsSaidBesideWhatWasTyped
         -- What Jira holds is the total of the operator's own worklogs on that
         -- task, dated that day. When the time on a task is not that total, the
