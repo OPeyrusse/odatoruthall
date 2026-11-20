@@ -134,15 +134,19 @@
       (testing "a finding shows the lines around it, and offers a remark"
         (is (str/includes? summary "byKey.containsKey(key)"))
         (is (str/includes? summary "Remark for Owllie"))
-        (is (str/includes? summary "Remarks for Owllie"))))
-    (testing "the diff is shown file by file, each line offering a missed remark"
-      (let [inputs (:body (GET sys (str "/owldesk/review/" done-id "/inputs")))]
-        (is (str/includes? inputs "src/main/java/acme/widget/SnapshotCache.java"))
-        (is (str/includes? inputs "private Snapshot last;"))
-        (is (str/includes? inputs (str "/owldesk/review/" done-id "/remark?file=src%2Fmain%2Fjava%2Facme%2Fwidget%2FRenderer.java&amp;side=old&amp;line=11")))))
+        (is (str/includes? summary "Remarks for Owllie")))
+    (testing "the diff has a tab of its own, file by file, each line offering a missed remark"
+      (let [diff (:body (GET sys (str "/owldesk/review/" done-id "/diff")))
+            inputs (:body (GET sys (str "/owldesk/review/" done-id "/inputs")))]
+        (is (str/includes? summary (str "/owldesk/review/" done-id "/diff")) "every page offers the tab")
+        (is (str/includes? diff "src/main/java/acme/widget/SnapshotCache.java"))
+        (is (str/includes? diff "private Snapshot last;"))
+        (is (str/includes? diff (str "/owldesk/review/" done-id "/remark?file=src%2Fmain%2Fjava%2Facme%2Fwidget%2FRenderer.java&amp;side=old&amp;line=11")))
+        (is (not (str/includes? inputs "private Snapshot last;")) "the inputs step no longer holds it")
+        (is (str/includes? inputs "shown in the Diff tab"))))
     (testing "code is text, never markup"
-      (is (not (str/includes? (:body (GET sys (str "/owldesk/review/" done-id "/inputs"))) "<String>")))
-      (is (str/includes? (:body (GET sys (str "/owldesk/review/" done-id "/inputs"))) "Map&lt;String, Snapshot&gt;")))))
+      (is (not (str/includes? (:body (GET sys (str "/owldesk/review/" done-id "/diff"))) "<String>")))
+      (is (str/includes? (:body (GET sys (str "/owldesk/review/" done-id "/diff"))) "Map&lt;String, Snapshot&gt;"))))))
 
 (deftest remarks-are-written-gathered-and-sent
   (let [sys (installation)

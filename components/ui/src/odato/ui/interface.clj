@@ -125,9 +125,9 @@
   (contains? (owldesk/step-ids tuning) step))
 
 (defn review-step?
-  "Whether `step` names a step of the review's process."
+  "Whether `step` names a step of the review's process, or its diff tab."
   [review step]
-  (contains? (owldesk/step-ids review) step))
+  (or (contains? (owldesk/step-ids review) step) (owldesk/diff-tab? review step)))
 
 (defn cleanup-page
   ([sys] (cleanup-page sys nil))
