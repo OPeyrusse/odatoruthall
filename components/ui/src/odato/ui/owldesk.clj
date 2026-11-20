@@ -397,12 +397,15 @@
     (case (:type block)
       "markdown" (markdown/render (:text block))
       "code" (quote-block (:text block))
-      "diff" [:div {:class "flex flex-col gap-2"}
-              (when (:title block) [:span {:class parts/heading-text} (str (:title block))])
-              (when (:line-href ctx)
-                [:p {:class parts/faint}
-                 "A line number starts a missed remark on that line: something the review should have flagged."])
-              (code/diff-view (review/parse-diff (str (:text block))) {:line-href (:line-href ctx)})]
+      "diff" (if (and (:diff-href ctx) (= (:text block) (review/diff-text r)))
+               ;; The review's own diff has a tab of its own.
+               [:p {:class parts/muted}
+                (str (or (:title block) "Diff") ": ")
+                [:a {:href (:diff-href ctx) :class "font-medium underline"} "shown in the Diff tab"]
+                "."]
+               [:div {:class "flex flex-col gap-2"}
+                (when (:title block) [:span {:class parts/heading-text} (str (:title block))])
+                (code/diff-view (review/parse-diff (str (:text block))) {})])
       "stats" [:div {:class "grid grid-cols-2 gap-2 sm:grid-cols-4"}
                (for [item (:items block) :when (map? item)]
                  (parts/stat {:label (str (:label item)) :count (:value item) :tone (tone (:tone item))}))]
@@ -424,19 +427,29 @@
                     (for [item (:items block) :when (map? item)] (finding-card r item ctx)))]
       (unknown-block block))))
 
-(defn- tabs [r current-id href]
+(defn- tab [href current? title chip]
+  [:a {:href href
+       :class (str "flex items-center gap-1.5 whitespace-nowrap px-3 py-2 text-sm "
+                   (if current?
+                     "border-b-2 border-slate-900 font-semibold dark:border-slate-100"
+                     "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"))}
+   title chip])
+
+(defn- dead-tab [title]
+  [:span {:class "flex items-center gap-1.5 px-3 py-2 text-sm text-slate-400 dark:text-slate-600"} title])
+
+(defn- tabs
+  "A tab per step, and the `extra` tabs after them (`[current? href title]`,
+  `href` nil while there is nothing to show)."
+  [r current-id href & extra]
   [:nav {:class "flex flex-wrap gap-1 border-b border-slate-200 dark:border-slate-800"}
    (for [step (get-in r [:run :steps])]
      (if (:result step)
-       [:a {:href (href (:run-id r) (:id step))
-            :class (str "flex items-center gap-1.5 whitespace-nowrap px-3 py-2 text-sm "
-                        (if (= current-id (:id step))
-                          "border-b-2 border-slate-900 font-semibold dark:border-slate-100"
-                          "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"))}
-        (str (:title step))
-        (when (#{:failed :skipped} (:state step)) (step-chip (:state step)))]
-       [:span {:class "flex items-center gap-1.5 px-3 py-2 text-sm text-slate-400 dark:text-slate-600"}
-        (str (:title step))]))])
+       (tab (href (:run-id r) (:id step)) (= current-id (:id step)) (str (:title step))
+            (when (#{:failed :skipped} (:state step)) (step-chip (:state step))))
+       (dead-tab (str (:title step)))))
+   (for [[current? h title] extra]
+     (if h (tab h current? title nil) (dead-tab title)))])
 
 (defn- step-view [r step ctx]
   (let [result (:result step)]
@@ -475,6 +488,26 @@
         (last (filter :result steps)))))
 
 (defn step-ids [r] (set (map :id (get-in r [:run :steps]))))
+
+(def diff-tab
+  "The tab of a review's page that shows the diff it read. A step of the
+  same id, should a process name one, keeps its own tab."
+  "diff")
+
+(defn diff-tab? [r step] (and (= diff-tab step) (not (contains? (step-ids r) step))))
+
+(defn- diff-view
+  "The diff the review read, file by file, each line starting a missed remark."
+  [r ctx]
+  (if-let [files (review/review-diff r)]
+    [:section {:class (str parts/card " flex flex-col gap-3 px-4 py-4")}
+     [:p {:class parts/faint}
+      "A line number starts a missed remark on that line: something the review should have flagged."]
+     (code/diff-view files {:line-href (:line-href ctx)})]
+    [:section {:class parts/card}
+     (parts/empty-state (if (review/active? r)
+                          "The diff appears once the step that reads it is done."
+                          "This run does not show the diff it read."))]))
 
 ;; ---------------------------------------------------------------- remarks
 
@@ -620,7 +653,7 @@
       [:div {:class "flex flex-wrap items-center gap-2"}
        [:a {:href (remark-href run-id {"kind" "general"}) :class parts/button} "Add a general remark"]
        (when (:run r)
-         [:a {:href (review-href run-id "inputs") :class parts/button} "Point at a miss in the diff"])]]
+         [:a {:href (review-href run-id diff-tab) :class parts/button} "Point at a miss in the diff"])]]
      (if (empty? drafts)
        [:p {:class (str "px-4 py-3 " parts/muted " " separated)} "No draft."]
        [:ul
@@ -752,9 +785,12 @@
                  [r])
         details (filter map? (get-in r [:run :process :details]))
         branch (or (get-in r [:run :branch]) (get-in r [:launch :branch]))
-        shown (current-step r step)
+        diff? (diff-tab? r step)
+        shown (current-step r (when-not diff? step))
         run-id (:run-id r)
-        ctx {:judged (review/judgements sys run-id)
+        diff-href (when (review/diff-text r) (review-href run-id diff-tab))
+        ctx {:diff-href diff-href
+             :judged (review/judgements sys run-id)
              :remarked (set (keep #(get-in % [:finding :fingerprint])
                                   (filter #(= :draft (:status %)) (review/remarks sys run-id))))
              :review? true
@@ -792,8 +828,8 @@
      (when (and (:run r) (not= :done (:state r)))
        (progress-card sys r review-href))
      (when (seq (get-in r [:run :steps]))
-       (list (tabs r (:id shown) review-href)
-             (step-view r shown ctx)))
+       (list (tabs r (when-not diff? (:id shown)) review-href [diff? diff-href "Diff"])
+             (if diff? (diff-view r ctx) (step-view r shown ctx))))
      (remarks-section sys r)]))
 
 ;; ------------------------------------------------------- writing a remark

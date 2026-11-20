@@ -214,8 +214,10 @@ surface ReviewPage {
         -- not on the branch, and survives the branch's deletion.
 
     @guarantee CodeIsShownAsTheRunSawIt
-        -- The diff the review read is shown file by file, each line with its
-        -- number on the new side, added and removed lines told apart. A
+        -- The diff the review read has a tab of its own, after the steps
+        -- (the step that holds it points there), and is shown file by file,
+        -- each line with its number on the new side, added and removed lines
+        -- told apart. A
         -- finding shows the lines around it from that diff, its own lines
         -- marked, or its quote alone when they are not in the diff. The code
         -- is shown as text, never interpreted.
