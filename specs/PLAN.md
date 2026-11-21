@@ -86,11 +86,12 @@ view of it:
 
 - Four sources — open PRs per tracked repository, PRs mentioning the operator,
   PRs with a review requested from the operator, PRs merged within a recent
-  window.
+  window. The last three are searches held to the tracked repositories:
+  nothing from any other repository is ever collected.
 - Sources are fetched through a queue, one at a time, each paginating to
   exhaustion before the next starts.
-- A PR is *of interest* when its author or one of its assignees is the
-  operator or a tracked member.
+- A PR is *of interest* when it belongs to a tracked repository and its
+  author or one of its assignees is the operator or a tracked member.
 - **Refresh is the server's own business**: it runs on the configured cadence
   whether or not anyone is watching, and the operator can also trigger one on
   demand. A manual refresh while one is already running does not start a

@@ -1,10 +1,12 @@
 (ns odato.github.client-test
-  "Which Jira issues a GitHub activity names, as the real client reads them.
+  "What the real client asks GitHub, and which Jira issues a GitHub activity
+  names, as it reads them.
 
   Only the title names an issue: the pull request's title, or a commit's first
   line. A description or a commit body often cites older tickets to explain
   the change, and citing a ticket is not working on it."
   (:require [clojure.data.json :as json]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [odato.github.interface :as github]
             [odato.time.interface :as t])
@@ -65,3 +67,37 @@
                      :updated_at "2026-09-15T10:00:00Z"}]}
            (fn [client]
              (is (= [#{}] (keys-of client :github-reviews))))))
+
+(defn- searched
+  "The search query the client sends for one page of `kind`."
+  [kind repositories]
+  (let [seen (promise)
+        server (HttpServer/create (InetSocketAddress. "127.0.0.1" 0) 0)]
+    (.createContext server "/"
+                    (reify HttpHandler
+                      (handle [_ exchange]
+                        (deliver seen (json/read-str (slurp (.getRequestBody exchange))
+                                                     :key-fn keyword))
+                        (let [bytes (.getBytes (json/write-str {:data {:search {:nodes []}}})
+                                               "UTF-8")]
+                          (.sendResponseHeaders exchange 200 (count bytes))
+                          (doto (.getResponseBody exchange) (.write bytes) (.close))))))
+    (.start server)
+    (try
+      (github/fetch-pull-requests
+       (github/client {:base-url (str "http://127.0.0.1:" (.getPort (.getAddress server)))
+                       :token "t" :timeout-ms 5000})
+       {:kind kind :login "ada" :repositories repositories
+        :merged-window-ms (t/days 3) :now-ms today})
+      (get-in (deref seen 5000 nil) [:variables :q])
+      (finally (.stop server 0)))))
+
+(deftest every-search-is-held-to-the-tracked-repositories
+  (let [tracked #{{:owner "acme" :name "widget"} {:owner "acme" :name "gadget"}}]
+    (doseq [[kind start] {:mentions "is:pr is:open mentions:ada"
+                          :review-requests "is:pr is:open review-requested:ada"
+                          :recently-merged "is:pr is:merged merged:>="}]
+      (testing (name kind)
+        (let [q (searched kind tracked)]
+          (is (str/starts-with? q start))
+          (is (str/ends-with? q " repo:acme/gadget repo:acme/widget")))))))

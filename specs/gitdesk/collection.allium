@@ -32,9 +32,9 @@ use "./pull-request.allium" as prs
 
 enum SourceKind {
     repository_pull_requests    -- the open pull requests of one tracked repository
-    | mentions                  -- pull requests mentioning the operator
-    | review_requests           -- pull requests awaiting the operator's review
-    | recently_merged           -- pull requests merged within the merged window
+    | mentions                  -- pull requests of the tracked repositories mentioning the operator
+    | review_requests           -- pull requests of the tracked repositories awaiting the operator's review
+    | recently_merged           -- pull requests of the tracked repositories merged within the merged window
 }
 
 enum CycleKind {
@@ -430,6 +430,9 @@ rule PullRequestEntersTheSnapshot {
         or observation.facts.author = github_access.account_login
         or observation.facts.assignees.any(a => a in in_force.tracked_members)
         or github_access.account_login in observation.facts.assignees
+    -- Repositories compare as GitHub compares them, without regard to case.
+    let tracked = observation.repository in in_force.tracked_repositories
+    requires: tracked
     requires: of_interest
     requires: not exists known
     ensures:
@@ -458,6 +461,9 @@ rule PullRequestRefreshed {
         or observation.facts.author = github_access.account_login
         or observation.facts.assignees.any(a => a in in_force.tracked_members)
         or github_access.account_login in observation.facts.assignees
+    -- Repositories compare as GitHub compares them, without regard to case.
+    let tracked = observation.repository in in_force.tracked_repositories
+    requires: tracked
     requires: of_interest
     requires: exists known
     ensures:
@@ -471,10 +477,10 @@ rule PullRequestRefreshed {
                 pull_request: known)
 
     @guidance
-        -- A pull request neither the operator nor a tracked member authored or
-        -- was assigned is not of interest: it is not recorded, and one that
-        -- stops being of interest leaves the snapshot with the previous
-        -- cycle's entries.
+        -- A pull request outside the tracked repositories, or that neither the
+        -- operator nor a tracked member authored or was assigned, is not of
+        -- interest: it is not recorded, and one that stops being of interest
+        -- leaves the snapshot with the previous cycle's entries.
 }
 
 ------------------------------------------------------------
@@ -597,6 +603,12 @@ surface GithubCollectionIntegration {
     @guarantee OneSourceInFlight
         -- At most one source is being collected at any moment, and it
         -- paginates to exhaustion before the next one starts.
+
+    @guarantee OnlyTrackedRepositoriesAreAskedFor
+        -- Every source asks GitHub about the tracked repositories only: the
+        -- mentions, the review requests and the recently merged are searches
+        -- held to them. Nothing from any other repository is of interest, and
+        -- asking for it would only spend the budget.
 }
 
 surface InstallationLifecycle {

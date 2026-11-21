@@ -36,6 +36,20 @@
       (is (:has-ever-collected (collector/snapshot sys)))
       (is (testing*/saw? sys :collection/completed)))))
 
+(deftest nothing-outside-the-tracked-repositories-is-recorded
+  (let [sys (installation
+             :pull-requests
+             {:repository-pull-requests
+              {"acme/widget" [(fix/observation {:number 1 :author "ada" :updated-at now})]}
+              :mentions [(fix/observation {:owner "other" :name "thing" :number 4
+                                           :author "grace" :updated-at now})]
+              :review-requests [(fix/observation {:owner "Acme" :name "Widget" :number 5
+                                                  :author "grace" :updated-at now})]
+              :recently-merged []})]
+    (collector/collect! sys :manual)
+    (is (= #{1 5} (set (map :number (collector/pull-requests sys))))
+        "a mention elsewhere is dropped; a repository compares without regard to case")))
+
 (deftest sources-take-their-turn-one-at-a-time
   (let [sys (installation :page-size 2)]
     (collector/collect! sys :manual)
@@ -120,8 +134,8 @@
         "a repository removed from the list keeps its pull requests on screen")
     (testing "until the next collection, which is when it is dropped"
       (collector/collect! sys :manual)
-      (is (= #{4} (set (map :number (collector/pull-requests sys))))
-          "only the mention survives; the repository source and its data are gone")
+      (is (empty? (collector/pull-requests sys))
+          "the repository source and its data are gone, and so is the mention in it")
       (is (not-any? #(= :repository-pull-requests (:kind %))
                     (filter #(= "repository-pull-requests|acme/widget" (:ident %))
                             (:sources (collector/snapshot sys))))))))

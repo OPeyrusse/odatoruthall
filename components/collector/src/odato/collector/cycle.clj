@@ -104,13 +104,14 @@
     (access/budget-observed! sys (or (:remaining budget) 1) (:resets-at budget))))
 
 (defn- record-observation!
-  "PullRequestEntersTheSnapshot / PullRequestRefreshed. A pull request neither
-  the operator nor a tracked member authored or was assigned is not of
-  interest: it is not recorded."
+  "PullRequestEntersTheSnapshot / PullRequestRefreshed. A pull request outside
+  the tracked repositories, or that neither the operator nor a tracked member
+  authored or was assigned, is not of interest: it is not recorded."
   [sys task-id cycle-id source-ident {:keys [repository number facts]}]
   (let [in-force (config/current sys)
         operator (access/operator-login sys)]
-    (when (prs/of-interest? facts {:members (:members in-force) :operator operator})
+    (when (and (core/tracked-repository? in-force repository)
+               (prs/of-interest? facts {:members (:members in-force) :operator operator}))
       (let [ident (prs/ident repository number)
             d (db/db (core/conn sys))
             known (db/lookup d :pr/ident ident)]

@@ -1,6 +1,7 @@
 (ns odato.collector.core
   "Reading the snapshot, and the shapes the cycle writes into it."
-  (:require [odato.access.interface :as access]
+  (:require [clojure.string :as str]
+            [odato.access.interface :as access]
             [odato.config.interface :as config]
             [odato.db.interface :as db]
             [odato.events.interface :as events]
@@ -69,6 +70,18 @@
          vec)))
 
 (defn collecting? [sys] (pos? (count (active-cycles sys))))
+
+(defn- repository-of
+  "`owner/name` as GitHub compares it: without regard to case."
+  [repository]
+  (some-> (config/repository-key repository) str/lower-case))
+
+(defn tracked-repository?
+  "Whether the repository is one the configuration in force tracks. Nothing
+  from any other repository is of interest, wherever it was found."
+  [in-force repository]
+  (contains? (into #{} (keep repository-of) (:repositories in-force))
+             (repository-of repository)))
 
 (defn pull-request-views
   "Every pull request the snapshot holds, classified. A pull request reached by

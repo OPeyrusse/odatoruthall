@@ -108,6 +108,48 @@
       (is (nil? (shown-by body "Ship it")))
       (is (= "draftsAging" (shown-by body "A sketch")) "the draft is hidden"))))
 
+(deftest nothing-outside-the-tracked-repositories-is-shown
+  ;; Whatever source brought it, a pull request of an untracked repository
+  ;; shows nowhere: not in the operator's work, not in the aging, not in the
+  ;; team.
+  (let [elsewhere (fn [m] (fix/observation (merge {:owner "other" :name "thing"
+                                                   :updated-at now
+                                                   :opened-at (- now (t/days 20))}
+                                                  m)))
+        sys (testing*/configured!
+             {:github {:login "ada"
+                       ;; Asked as configured, GitHub answers in its own case.
+                       :pull-requests
+                       {:repository-pull-requests
+                        {"ACME/Widget"
+                         [(fix/observation {:number 1 :author "grace" :title "Tracked and old"
+                                            :updated-at now :opened-at (- now (t/days 20))})]}
+                        :mentions [(elsewhere {:number 7 :author "grace" :title "Mentioned elsewhere"
+                                               :assignees #{"grace"}})]
+                        :review-requests [(elsewhere {:number 8 :author "ada" :title "Mine elsewhere"
+                                                      :requested-reviewers #{"ada"}})]
+                        :recently-merged []}}
+              :configuration {:repositories #{{:owner "ACME" :name "Widget"}}}})]
+    (collector/collect! sys :manual)
+    (testing "the aging lists the tracked repositories only, whatever their case"
+      (let [body (ui/aging-fragment sys)]
+        (is (str/includes? body "Tracked and old"))
+        (is (not (str/includes? body "Mentioned elsewhere")))
+        (is (not (str/includes? body "Mine elsewhere")))))
+    (testing "the team counts the tracked repositories only"
+      (is (= "(1 / 0)" (second (re-find #"@grace</span>.*?(\(\d+ / \d+\))"
+                                         (ui/gitdesk-fragment sys))))
+          "authored / assigned")
+      (let [body (ui/member-fragment sys "grace")]
+        (is (str/includes? body "Tracked and old"))
+        (is (not (str/includes? body "Mentioned elsewhere")))
+        (is (str/includes? body "Nothing is assigned to @grace."))))
+    (testing "nor does the operator's own work"
+      (doseq [slug ["authored" "to-review"]]
+        (is (not (str/includes? (ui/my-work-fragment sys (ui/my-work-group slug))
+                                "Mine elsewhere"))
+            slug)))))
+
 (deftest a-listed-pull-request-links-to-its-page-and-to-github
   (let [sys (installation)]
     (collector/collect! sys :manual)
