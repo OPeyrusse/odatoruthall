@@ -91,10 +91,3 @@
   and the clock as it stands. This is what every dashboard count reads."
   [sys]
   (core/pull-request-views sys))
-
-(defn tracked-pull-requests
-  "The collected pull requests that belong to a tracked repository, classified
-  the same way. A mention or a review request elsewhere is the operator's own
-  business: it counts in their work and nowhere else."
-  [sys]
-  (core/tracked-pull-request-views sys))

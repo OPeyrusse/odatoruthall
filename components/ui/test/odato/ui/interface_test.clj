@@ -108,18 +108,18 @@
       (is (nil? (shown-by body "Ship it")))
       (is (= "draftsAging" (shown-by body "A sketch")) "the draft is hidden"))))
 
-(deftest only-the-operators-own-work-reaches-beyond-the-tracked-repositories
-  ;; A mention and a review request reach into any repository. What they
-  ;; bring from an untracked one counts in the operator's work, and nowhere
-  ;; else: not in the aging, not in the team.
+(deftest nothing-outside-the-tracked-repositories-is-shown
+  ;; Whatever source brought it, a pull request of an untracked repository
+  ;; shows nowhere: not in the operator's work, not in the aging, not in the
+  ;; team.
   (let [elsewhere (fn [m] (fix/observation (merge {:owner "other" :name "thing"
                                                    :updated-at now
                                                    :opened-at (- now (t/days 20))}
                                                   m)))
         sys (testing*/configured!
              {:github {:login "ada"
-                       :pull-requests
                        ;; Asked as configured, GitHub answers in its own case.
+                       :pull-requests
                        {:repository-pull-requests
                         {"ACME/Widget"
                          [(fix/observation {:number 1 :author "grace" :title "Tracked and old"
@@ -144,9 +144,11 @@
         (is (str/includes? body "Tracked and old"))
         (is (not (str/includes? body "Mentioned elsewhere")))
         (is (str/includes? body "Nothing is assigned to @grace."))))
-    (testing "the operator's own work still reaches everywhere"
-      (let [body (ui/my-work-fragment sys (ui/my-work-group "authored"))]
-        (is (str/includes? body "Mine elsewhere"))))))
+    (testing "nor does the operator's own work"
+      (doseq [slug ["authored" "to-review"]]
+        (is (not (str/includes? (ui/my-work-fragment sys (ui/my-work-group slug))
+                                "Mine elsewhere"))
+            slug)))))
 
 (deftest a-listed-pull-request-links-to-its-page-and-to-github
   (let [sys (installation)]

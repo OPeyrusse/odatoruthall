@@ -32,9 +32,9 @@ use "./pull-request.allium" as prs
 
 enum SourceKind {
     repository_pull_requests    -- the open pull requests of one tracked repository
-    | mentions                  -- pull requests mentioning the operator
-    | review_requests           -- pull requests awaiting the operator's review
-    | recently_merged           -- pull requests merged within the merged window
+    | mentions                  -- pull requests of the tracked repositories mentioning the operator
+    | review_requests           -- pull requests of the tracked repositories awaiting the operator's review
+    | recently_merged           -- pull requests of the tracked repositories merged within the merged window
 }
 
 enum CycleKind {
@@ -95,25 +95,16 @@ entity Snapshot {
     -- of, so a single stale source ages the whole snapshot.
     oldest_success_at: oldest(collected_sources -> last_success_at)
 
-    -- The pull requests of the tracked repositories. The mentions and the
-    -- review requests reach into any repository; what they bring from
-    -- elsewhere is the operator's own business, and only their own work
-    -- counts it. Repositories compare as GitHub compares them, without
-    -- regard to case. A repository that leaves the configuration leaves this
-    -- at once, without waiting for the next collection.
-    tracked_pull_requests: collected_pull_requests
-        where repository in settings/current.tracked_repositories
-
-    -- The slices the team is counted from: the tracked repositories only.
-    -- They read the snapshot as it stands, which is the whole point: a
-    -- threshold changed between two reads changes what they answer.
-    authored_by(login): tracked_pull_requests where authored_by(login)
-    assigned_to(login): tracked_pull_requests where assigned_to(login)
-    drafted_by(login): tracked_pull_requests
+    -- The slices the dashboard counts. They read the snapshot as it stands,
+    -- which is the whole point: a threshold changed between two reads
+    -- changes what they answer.
+    authored_by(login): collected_pull_requests where authored_by(login)
+    assigned_to(login): collected_pull_requests where assigned_to(login)
+    drafted_by(login): collected_pull_requests
         where authored_by(login) and facts.is_draft
-    review_requested_from(login): tracked_pull_requests
+    review_requested_from(login): collected_pull_requests
         where review_requested_from(login)
-    addressed_for(login): tracked_pull_requests where addressed_for(login)
+    addressed_for(login): collected_pull_requests where addressed_for(login)
 }
 
 entity CollectionSource {
@@ -439,6 +430,9 @@ rule PullRequestEntersTheSnapshot {
         or observation.facts.author = github_access.account_login
         or observation.facts.assignees.any(a => a in in_force.tracked_members)
         or github_access.account_login in observation.facts.assignees
+    -- Repositories compare as GitHub compares them, without regard to case.
+    let tracked = observation.repository in in_force.tracked_repositories
+    requires: tracked
     requires: of_interest
     requires: not exists known
     ensures:
@@ -467,6 +461,9 @@ rule PullRequestRefreshed {
         or observation.facts.author = github_access.account_login
         or observation.facts.assignees.any(a => a in in_force.tracked_members)
         or github_access.account_login in observation.facts.assignees
+    -- Repositories compare as GitHub compares them, without regard to case.
+    let tracked = observation.repository in in_force.tracked_repositories
+    requires: tracked
     requires: of_interest
     requires: exists known
     ensures:
@@ -480,10 +477,10 @@ rule PullRequestRefreshed {
                 pull_request: known)
 
     @guidance
-        -- A pull request neither the operator nor a tracked member authored or
-        -- was assigned is not of interest: it is not recorded, and one that
-        -- stops being of interest leaves the snapshot with the previous
-        -- cycle's entries.
+        -- A pull request outside the tracked repositories, or that neither the
+        -- operator nor a tracked member authored or was assigned, is not of
+        -- interest: it is not recorded, and one that stops being of interest
+        -- leaves the snapshot with the previous cycle's entries.
 }
 
 ------------------------------------------------------------
@@ -606,6 +603,12 @@ surface GithubCollectionIntegration {
     @guarantee OneSourceInFlight
         -- At most one source is being collected at any moment, and it
         -- paginates to exhaustion before the next one starts.
+
+    @guarantee OnlyTrackedRepositoriesAreAskedFor
+        -- Every source asks GitHub about the tracked repositories only: the
+        -- mentions, the review requests and the recently merged are searches
+        -- held to them. Nothing from any other repository is of interest, and
+        -- asking for it would only spend the budget.
 }
 
 surface InstallationLifecycle {

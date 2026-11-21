@@ -71,6 +71,18 @@
 
 (defn collecting? [sys] (pos? (count (active-cycles sys))))
 
+(defn- repository-of
+  "`owner/name` as GitHub compares it: without regard to case."
+  [repository]
+  (some-> (config/repository-key repository) str/lower-case))
+
+(defn tracked-repository?
+  "Whether the repository is one the configuration in force tracks. Nothing
+  from any other repository is of interest, wherever it was found."
+  [in-force repository]
+  (contains? (into #{} (keep repository-of) (:repositories in-force))
+             (repository-of repository)))
+
 (defn pull-request-views
   "Every pull request the snapshot holds, classified. A pull request reached by
   two sources has one entry per source and is counted once here."
@@ -90,20 +102,6 @@
                            :last-seen-at (:pr/last-seen-at row)}
                           in-force at)))
          vec)))
-
-(defn- repository-of
-  "`owner/name` as GitHub compares it: without regard to case."
-  [repository]
-  (some-> (config/repository-key repository) str/lower-case))
-
-(defn tracked-pull-request-views
-  "The pull requests of the tracked repositories only. The mentions and the
-  review requests reach into any repository; what they bring from elsewhere
-  is the operator's business, not the team's."
-  [sys]
-  (let [tracked (into #{} (keep repository-of) (:repositories (config/current sys)))]
-    (filterv #(contains? tracked (repository-of (:repository %)))
-             (pull-request-views sys))))
 
 ;; ----------------------------------------------------------- the installation
 

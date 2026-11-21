@@ -160,13 +160,17 @@ query($q: String!, $cursor: String) {
 (defn- merged-since [merged-window-ms now-ms]
   (t/format-day (t/utc-midnight-of (- now-ms (long (or merged-window-ms (t/days 3)))))))
 
-(defn- search-terms [{:keys [kind login repositories merged-window-ms now-ms]}]
-  (case kind
-    :mentions (str "is:pr is:open mentions:" login)
-    :review-requests (str "is:pr is:open review-requested:" login)
-    :recently-merged (str "is:pr is:merged merged:>=" (merged-since merged-window-ms now-ms)
-                          " " (str/join " " (for [r repositories]
-                                              (str "repo:" (:owner r) "/" (:name r)))))))
+(defn- search-terms
+  "Every search is held to the tracked repositories: what happens elsewhere is
+  of no interest, and would only spend the budget."
+  [{:keys [kind login repositories merged-window-ms now-ms]}]
+  (str (case kind
+         :mentions (str "is:pr is:open mentions:" login)
+         :review-requests (str "is:pr is:open review-requested:" login)
+         :recently-merged (str "is:pr is:merged merged:>="
+                               (merged-since merged-window-ms now-ms)))
+       " " (str/join " " (for [r (sort-by (juxt :owner :name) repositories)]
+                           (str "repo:" (:owner r) "/" (:name r))))))
 
 (defn- page-of [c request]
   (if (= :repository-pull-requests (:kind request))
