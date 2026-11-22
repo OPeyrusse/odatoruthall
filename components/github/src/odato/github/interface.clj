@@ -108,6 +108,41 @@
   [c request]
   (protocol/-delete-branch c request))
 
+;; --------------------------------------------------------------- assignees
+
+(defn assigned-pull-requests
+  "One page of the open pull requests assigned to `:login`, held to the
+  tracked repositories.
+
+  Takes `{:login <the operator> :repositories #{...} :cursor <string|nil>}`.
+
+  Answers `{:pull-requests [{:repository :number :title :url
+                             :author <login|nil> :author-is-user <boolean>
+                             :reviews [{:reviewer :verdict :submitted-at}]
+                             :assignments [{:assignee :assigned-at}]}]
+            :next-cursor <string|nil> :budget {...}}`,
+  `{:retry true :budget {...}}` when the budget is spent, or
+  `{:failure ... :budget {...}}`.
+
+  `:author-is-user` is false for a GitHub App's bot, a mannequin, and a
+  deleted account (no `:author`). `:reviews` are `:login`'s own, in any order,
+  with `:verdict` one of `:approved`, `:changes-requested`, `:commented`,
+  `:dismissed`; a pending review is not among them. `:assignments` are the
+  pull request's latest assigned events, whoever was assigned."
+  [c request]
+  (protocol/-assigned-pull-requests c request))
+
+(defn add-assignee
+  "`{:owner :name :number :login}` → `{:written true}` or a failure. GitHub
+  ignores a login it will not accept as assignee rather than failing."
+  [c request]
+  (protocol/-add-assignee c request))
+
+(defn remove-assignee
+  "`{:owner :name :number :login}` → `{:written true}` or a failure."
+  [c request]
+  (protocol/-remove-assignee c request))
+
 (defn mock-write-branch!
   "Moves a branch of a mock client, as a running review does."
   [c repository branch files]

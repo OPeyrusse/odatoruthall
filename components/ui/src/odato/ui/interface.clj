@@ -81,6 +81,7 @@
    (document (layout/page sys {:title "settings" :section :settings}
                           [:div {:class "flex flex-col gap-4"}
                            (settings/body sys {:outcome outcome})
+                           (settings/reassignment-section sys)
                            (owldesk/settings-section sys {:outcome review-outcome})]))))
 
 (defn owldesk-page
@@ -158,6 +159,8 @@
 (defn tuning-fragment [sys tuning step] (render (owldesk/tuning-page sys tuning {:step step})))
 (defn review-settings-fragment [sys outcome]
   (render (owldesk/settings-section sys {:outcome outcome})))
+(defn reassignment-settings-fragment [sys]
+  (render (settings/reassignment-section sys)))
 
 ;; ------------------------------------------------------------------- reading
 
@@ -165,6 +168,11 @@
   "Form parameters as a proposal the configuration component can judge."
   [params]
   (settings/read-proposal params))
+
+(defn reassignment-switch
+  "Whether the reassignment form asks for the pass to be on."
+  [params]
+  (settings/read-reassignment-switch params))
 
 (defn review-settings-proposal
   "Form parameters as a proposal the review settings can judge."

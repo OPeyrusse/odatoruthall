@@ -93,6 +93,25 @@ query($q: String!, $cursor: String) {
   }
 }"))
 
+(def ^:private assigned-query "
+query($q: String!, $login: String!, $cursor: String) {
+  rateLimit { remaining resetAt }
+  search(query: $q, type: ISSUE, first: 50, after: $cursor) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      ... on PullRequest {
+        number title url
+        repository { name owner { login } }
+        author { __typename login }
+        reviews(author: $login, last: 100) { nodes { author { login } state submittedAt } }
+        timelineItems(itemTypes: [ASSIGNED_EVENT], last: 100) {
+          nodes { ... on AssignedEvent { createdAt assignee { ... on User { login } } } }
+        }
+      }
+    }
+  }
+}")
+
 ;; ------------------------------------------------------------- translation
 
 (def ^:private rollup-states
@@ -144,6 +163,28 @@ query($q: String!, $cursor: String) {
                  (sort-by :submitted-at)
                  vec)})
 
+(defn- ->review [r]
+  (when-let [verdict (get review-verdicts (:state r))]
+    {:reviewer (get-in r [:author :login])
+     :verdict verdict
+     :submitted-at (t/parse-instant (:submittedAt r))}))
+
+(defn- ->assigned-pull-request [node]
+  (when (:number node)
+    {:repository {:owner (get-in node [:repository :owner :login])
+                  :name (get-in node [:repository :name])}
+     :number (:number node)
+     :title (:title node)
+     :url (:url node)
+     :author (get-in node [:author :login])
+     :author-is-user (= "User" (get-in node [:author :__typename]))
+     :reviews (into [] (keep ->review) (get-in node [:reviews :nodes]))
+     :assignments (vec (for [event (get-in node [:timelineItems :nodes])
+                             :let [assignee (get-in event [:assignee :login])]
+                             :when assignee]
+                         {:assignee assignee
+                          :assigned-at (t/parse-instant (:createdAt event))}))}))
+
 (defn- ->observation [node]
   (when (:number node)
     {:repository {:owner (get-in node [:repository :owner :login])
@@ -167,6 +208,7 @@ query($q: String!, $cursor: String) {
   (str (case kind
          :mentions (str "is:pr is:open mentions:" login)
          :review-requests (str "is:pr is:open review-requested:" login)
+         :assigned (str "is:pr is:open assignee:" login)
          :recently-merged (str "is:pr is:merged merged:>="
                                (merged-since merged-window-ms now-ms)))
        " " (str/join " " (for [r (sort-by (juxt :owner :name) repositories)]
@@ -190,6 +232,22 @@ query($q: String!, $cursor: String) {
       :else
       (let [page (get-in (:body response) path)]
         {:observations (into [] (keep ->observation) (:nodes page))
+         :next-cursor (when (get-in page [:pageInfo :hasNextPage])
+                        (get-in page [:pageInfo :endCursor]))
+         :budget budget}))))
+
+(defn- assigned-pull-requests [c {:keys [login cursor] :as request}]
+  (let [response (graphql c assigned-query {:q (search-terms (assoc request :kind :assigned))
+                                            :login login
+                                            :cursor cursor})
+        budget (graphql-budget (:body response))]
+    (cond
+      (exhausted? response budget) {:retry true :budget budget}
+      (not (http/ok? response)) {:failure (failure-of response) :budget budget}
+      (seq (get-in response [:body :errors])) {:failure :service-error :budget budget}
+      :else
+      (let [page (get-in response [:body :data :search])]
+        {:pull-requests (into [] (keep ->assigned-pull-request) (:nodes page))
          :next-cursor (when (get-in page [:pageInfo :hasNextPage])
                         (get-in page [:pageInfo :endCursor]))
          :budget budget}))))
@@ -384,6 +442,14 @@ query($q: String!, $cursor: String) {
       {:deleted true :budget (:budget answer)}
       answer)))
 
+;; --------------------------------------------------------------- assignees
+
+(defn- assignees-call [c method {:keys [number login] :as request}]
+  (rest-call c {:method method
+                :path (str (repo-path request) "/issues/" number "/assignees")
+                :body {:assignees [login]}}
+             (fn [_ _] {:written true})))
+
 ;; ------------------------------------------------------------------ client
 
 (defrecord GithubClient [api]
@@ -404,7 +470,12 @@ query($q: String!, $cursor: String) {
   (-tree [this request] (tree this request))
   (-blob [this request] (blob this request))
   (-delete-branch [this request] (delete-branch this request))
-  (-review-comments [this request] (review-comments this request)))
+  (-review-comments [this request] (review-comments this request))
+
+  protocol/GithubAssignees
+  (-assigned-pull-requests [this request] (assigned-pull-requests this request))
+  (-add-assignee [this request] (assignees-call this :post request))
+  (-remove-assignee [this request] (assignees-call this :delete request)))
 
 (defn client
   [{:keys [token base-url timeout-ms]

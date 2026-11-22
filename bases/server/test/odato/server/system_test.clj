@@ -62,3 +62,13 @@
     (is (thrown? clojure.lang.ExceptionInfo
                  (system/create (settings {:turso (:options turso)})))
         "writing the worklog somewhere the operator did not ask for is worse than not starting")))
+
+(deftest the-assignment-credential-is-a-client-of-its-own
+  (let [real (fn [github] (system/create (settings {:demo false
+                                                    :github (merge {:base-url "https://api.github.com"
+                                                                    :token "operator"}
+                                                                   github)
+                                                    :jira {}
+                                                    :owllie {}})))]
+    (is (nil? (:assigner (real {}))) "without GITHUB_ASSIGN_TOKEN, nothing may write")
+    (is (some? (:assigner (real {:assign-token "assigner"}))))))

@@ -11,4 +11,5 @@
         poly/worklog {:local/root "../worklog"}
         poly/discovery {:local/root "../discovery"}
         poly/owllie {:local/root "../owllie"}
-        poly/review {:local/root "../review"}}}
+        poly/review {:local/root "../review"}
+        poly/reassignment {:local/root "../reassignment"}}}

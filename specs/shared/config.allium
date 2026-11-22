@@ -17,6 +17,10 @@
 --                             snapshot already in hand, so changing one
 --                             reclassifies what is on screen without fetching
 --                             anything.
+--   the reassignment switch -- whether the operator is taken off the pull
+--                             requests they have ruled on
+--                             (gitdesk/reassignment). Saved apart, it takes
+--                             effect at the next minute's pass.
 --
 -- Whether drafts are listed is not a setting: each list carries its own toggle
 -- (see the dashboard).
@@ -86,6 +90,8 @@ entity Configuration {
     -- Presentation settings
     thresholds: ClassificationThresholds
 
+    reassignment_enabled: Boolean
+
     updated_at: Timestamp?
 
     is_collectable: tracked_repositories.count > 0 and tracked_members.count > 0
@@ -148,7 +154,8 @@ default Configuration current = {
         commits: config.default_commit_threshold,
         failing_commits: config.default_failing_commit_window,
         merged_window: config.default_merged_window
-    }
+    },
+    reassignment_enabled: false
 }
 
 ------------------------------------------------------------
@@ -218,6 +225,15 @@ rule ConfigurationRefused {
         -- one that was already in force.
 }
 
+rule ReassignmentSwitched {
+    when: OperatorSwitchesReassignment(enabled)
+    ensures: current.reassignment_enabled = enabled
+
+    @guidance
+        -- The switch is saved apart from the rest of the configuration, and
+        -- is held to none of its bounds.
+}
+
 ------------------------------------------------------------
 -- Invariants
 ------------------------------------------------------------
@@ -243,6 +259,8 @@ surface Settings {
         current.collection_window
         current.thresholds
         current.updated_at
+        current.reassignment_enabled
+        access/assignment_credential.is_present
 
     provides:
         OperatorSavesConfiguration(
@@ -251,6 +269,7 @@ surface Settings {
             current.refresh_cadence,
             current.collection_window,
             current.thresholds)
+        OperatorSwitchesReassignment(current.reassignment_enabled)
 
     @guarantee ConfigurationOutlivesTheProcess
         -- The configuration in force after a restart is the one last saved.
@@ -260,6 +279,11 @@ surface Settings {
         -- Saving starts no collection. A repository removed from the list
         -- keeps its pull requests on screen until the next collection; a
         -- threshold changed reclassifies the snapshot in hand immediately.
+
+    @guarantee CredentialsAreNeverSettings
+        -- The assignment credential comes with the process, like the GitHub
+        -- and Jira ones. The panel says whether it is there, never what it
+        -- is; without it, the switch on changes nothing.
 
     @guarantee AllTimesAreUTC
         -- The collection window is expressed and evaluated in UTC, so the same

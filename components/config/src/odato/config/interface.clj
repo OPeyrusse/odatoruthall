@@ -52,6 +52,14 @@
   [proposal]
   (core/validate proposal))
 
+(defn switch-reassignment!
+  "OperatorSwitchesReassignment: whether the operator is taken off the pull
+  requests they have ruled on. Saved apart from the rest of the
+  configuration, held to none of its bounds, and announcing nothing; answers
+  the configuration in force."
+  [sys enabled?]
+  (core/switch-reassignment! sys enabled?))
+
 ;; ------------------------------------------------------------- repositories
 
 (defn parse-repository

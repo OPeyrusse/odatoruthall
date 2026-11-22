@@ -1,0 +1,346 @@
+-- allium: 3
+--
+-- Reassignment — taking the operator off the open pull requests they have
+-- just ruled on, and handing a change request back to its author.
+--
+-- The operator is assigned to a pull request to review it, and the
+-- assignment outlives the review. Once a minute, inside the collection
+-- window, a pass finds the open pull requests of the tracked repositories
+-- still assigned to the operator, and edits the assignees of those the
+-- operator has ruled on since they were last assigned:
+--
+--   approved            -- the operator is removed, and nothing else
+--   changes requested   -- the author is assigned, then the operator removed
+--
+-- The pass is gitdesk's neighbour, not part of it: it runs on its own
+-- schedule, reads GitHub for itself, and reads none of the snapshot. It
+-- shares only the configuration's tracked repositories and collection
+-- window. gitdesk sees what it changed at its next collection.
+--
+-- Nothing is read or written unless the operator has switched the pass on
+-- (settings/Configuration.reassignment_enabled) and the installation holds a
+-- credential that may change assignees (access/AssignmentCredential). The
+-- search uses the operator's own GitHub credential, which stays read-only.
+--
+-- What the passes wrote, done or failed, is listed on the settings page
+-- under the switch (LatestReassignments), one line per pull request. The
+-- list lives with the process, like the schedule.
+
+use "../shared/access.allium" as access
+use "../shared/config.allium" as settings
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum ReviewVerdict { approved | changes_requested | commented | dismissed }
+enum AssigneeOperation { add | remove }
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value OperatorReview {
+    verdict: ReviewVerdict
+    submitted_at: Timestamp
+}
+
+value AssigneeWrite {
+    operation: AssigneeOperation
+    login: String
+    failure: String?                    -- why GitHub refused it
+}
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity AssignedPullRequest {
+    -- An open pull request of the tracked repositories assigned to the
+    -- operator, as one pass's search found it.
+    repository: settings/RepositoryReference
+    number: Integer
+    author: String?                     -- none for a deleted account
+    author_is_user: Boolean             -- a GitHub user, not a GitHub App's
+                                        -- bot, a mannequin or a deleted account
+    operator_reviews: List<OperatorReview>
+    operator_assigned_at: Timestamp?    -- the operator's latest assignment to
+                                        -- it, whoever made it
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity ReassignmentSchedule {
+    next_pass_at: Timestamp
+}
+
+entity Reassignment {
+    -- What the latest pass to write on a pull request's assignees wrote.
+    repository: settings/RepositoryReference
+    number: Integer
+    happened_at: Timestamp
+    writes: List<AssigneeWrite>         -- in the order they were made, the
+                                        -- first that failed ending them
+
+    failed: writes.any(w => w.failure != null)
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    pass_interval: Duration = 1.minutes
+    reassignments_listed: Integer = 20
+}
+
+------------------------------------------------------------
+-- Defaults
+------------------------------------------------------------
+
+default ReassignmentSchedule reassignment_schedule = { next_pass_at: now }
+
+------------------------------------------------------------
+-- Rules — the schedule
+------------------------------------------------------------
+
+rule ReassignmentPassDue {
+    when: due: ReassignmentSchedule.next_pass_at <= now
+    let in_force = settings/Configuration{scope: installation}
+    requires: within_collection_window(now, in_force.collection_window)
+    ensures:
+        due.next_pass_at = now + config.pass_interval
+        ReassignmentPassRequested()
+
+    @guidance
+        -- A pass still running when the next one falls due is not doubled:
+        -- the next starts once it has ended.
+}
+
+rule ReassignmentPassOutsideTheWindow {
+    when: due: ReassignmentSchedule.next_pass_at <= now
+    let in_force = settings/Configuration{scope: installation}
+    requires: not within_collection_window(now, in_force.collection_window)
+    ensures:
+        due.next_pass_at = next_window_opening(now, in_force.collection_window)
+
+    @guidance
+        -- As a scheduled collection does: nothing at night, nothing at the
+        -- weekend. A review submitted outside the window is acted on at its
+        -- next opening.
+}
+
+------------------------------------------------------------
+-- Rules — the pass
+------------------------------------------------------------
+
+rule ReassignmentPassStarts {
+    when: ReassignmentPassRequested()
+    let in_force = settings/Configuration{scope: installation}
+    let github_access = access/Connection{service: github}
+    requires: in_force.reassignment_enabled
+    requires: exists access/AssignmentCredential{is_present: true}
+    requires: github_access.is_usable
+    requires: in_force.tracked_repositories.count > 0
+    requires: exists access/GithubBudget{status: available}
+    ensures:
+        AssignedPullRequestsSearchRequested(
+            login: github_access.account_login,
+            repositories: in_force.tracked_repositories)
+
+    @guidance
+        -- One search, paged through to the end, finds the open pull requests
+        -- of the tracked repositories assigned to the operator, each with its
+        -- author, the operator's reviews and the operator's latest
+        -- assignment. A search that fails, or a budget spent before or during
+        -- it, ends the pass there, logged: the next minute is the retry, so
+        -- nothing waits on the budget's reset.
+}
+
+rule ApprovalTakesTheOperatorOff {
+    when: AssignedPullRequestFound(pull_request)
+    let verdict = latest_verdict(pull_request.operator_reviews)
+    let operator = access/Connection{service: github}.account_login
+    requires: verdict != null
+    requires: verdict.verdict = approved
+    requires: pull_request.operator_assigned_at = null
+        or verdict.submitted_at > pull_request.operator_assigned_at
+    ensures:
+        AssigneeRemovalRequested(pull_request: pull_request, login: operator)
+
+    @guidance
+        -- The verdict is the operator's latest review that is not a comment:
+        -- a comment is skipped over, and a latest review that was dismissed
+        -- leaves the pull request alone. A verdict on a commit the author has
+        -- since pushed past still counts.
+        --
+        -- Anyone re-assigning the operator after the review, the author or
+        -- the operator themselves, makes the assignment newer than the
+        -- verdict: the pull request is left alone until the operator reviews
+        -- again, rather than undone every minute.
+}
+
+rule ChangeRequestHandsItBack {
+    when: AssignedPullRequestFound(pull_request)
+    let verdict = latest_verdict(pull_request.operator_reviews)
+    let operator = access/Connection{service: github}.account_login
+    requires: verdict != null
+    requires: verdict.verdict = changes_requested
+    requires: pull_request.operator_assigned_at = null
+        or verdict.submitted_at > pull_request.operator_assigned_at
+    ensures:
+        if pull_request.author_is_user:
+            AssigneeAdditionRequested(pull_request: pull_request, login: pull_request.author)
+        else:
+            AssigneeRemovalRequested(pull_request: pull_request, login: operator)
+
+    @guidance
+        -- The verdict reads as ApprovalTakesTheOperatorOff says. An author
+        -- that is not a GitHub user gets no assignment: only the operator is
+        -- removed.
+}
+
+rule AuthorAssigned {
+    when: AssigneeAdded(pull_request, login)
+    let operator = access/Connection{service: github}.account_login
+    ensures:
+        AssigneeRemovalRequested(pull_request: pull_request, login: operator)
+
+    @guidance
+        -- The author first, the operator second, so that every partial
+        -- failure leaves the pull request a candidate: the author write
+        -- failing changes nothing; the removal failing leaves the operator
+        -- assigned and the verdict still newer, and the next pass makes both
+        -- writes again, the first changing nothing. GitHub drops silently an
+        -- assignee it will not accept, such as a contributor without access
+        -- to the repository, and the operator is removed all the same.
+}
+
+rule OperatorTakenOff {
+    when: AssigneeRemoved(pull_request, login)
+    let verdict = latest_verdict(pull_request.operator_reviews)
+    ensures:
+        if verdict.verdict = changes_requested and pull_request.author_is_user:
+            PullRequestReassigned(
+                pull_request: pull_request,
+                writes: [
+                    { operation: add, login: pull_request.author, failure: null },
+                    { operation: remove, login: login, failure: null }])
+        else:
+            PullRequestReassigned(
+                pull_request: pull_request,
+                writes: [{ operation: remove, login: login, failure: null }])
+}
+
+rule AssigneeWriteFails {
+    when: AssigneeWriteFailed(pull_request, login, failure)
+    let verdict = latest_verdict(pull_request.operator_reviews)
+    let operator = access/Connection{service: github}.account_login
+    ensures:
+        if login != operator:
+            PullRequestReassigned(
+                pull_request: pull_request,
+                writes: [{ operation: add, login: login, failure: failure }])
+        else if verdict.verdict = changes_requested and pull_request.author_is_user:
+            PullRequestReassigned(
+                pull_request: pull_request,
+                writes: [
+                    { operation: add, login: pull_request.author, failure: null },
+                    { operation: remove, login: login, failure: failure }])
+        else:
+            PullRequestReassigned(
+                pull_request: pull_request,
+                writes: [{ operation: remove, login: login, failure: failure }])
+
+    @guidance
+        -- Logged. Nothing is undone: the pull request is still a candidate,
+        -- and the next pass retries.
+}
+
+------------------------------------------------------------
+-- Rules — what is listed
+------------------------------------------------------------
+
+rule ReassignmentListed {
+    when: PullRequestReassigned(pull_request, writes)
+    let earlier = Reassignment{repository: pull_request.repository, number: pull_request.number}
+    ensures:
+        if exists earlier:
+            earlier.happened_at = now
+            earlier.writes = writes
+        else:
+            Reassignment.created(
+                repository: pull_request.repository,
+                number: pull_request.number,
+                happened_at: now,
+                writes: writes)
+
+    @guidance
+        -- One line per pull request, its latest pass's: a write failing
+        -- every minute replaces its own line rather than pushing the other
+        -- pull requests off the list.
+}
+
+rule OldestReassignmentDropped {
+    when: _: Reassignment.created
+    requires: Reassignments.count > config.reassignments_listed
+    let oldest = min_by(Reassignments, r => r.happened_at)
+    ensures: not exists oldest
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface AssigneesIntegration {
+    facing gateway: access/GithubGateway
+
+    exposes:
+        gateway.account_login
+        gateway.budget_remaining
+
+    provides:
+        for pull_request in AssignedPullRequests:
+            AssignedPullRequestFound(pull_request)
+            AssigneeAdded(pull_request, pull_request.author)
+            AssigneeRemoved(pull_request, gateway.account_login)
+            AssigneeWriteFailed(pull_request, gateway.account_login, service_error)
+
+    @guarantee OnlyTrackedRepositoriesAreAskedFor
+        -- The search is held to the tracked repositories, as gitdesk's
+        -- searches are.
+
+    @guarantee WritesUseTheirOwnCredential
+        -- The search reads with the operator's GitHub credential; the
+        -- assignees are changed with the assignment credential alone. GitHub
+        -- shows that credential's owner as the one who changed them.
+
+    @guarantee OnlyTheAssigneesChange
+        -- Requested reviewers, labels and everything else on the pull request
+        -- are left as they are, and no assignee is ever added to a pull
+        -- request the operator was not assigned to.
+}
+
+surface LatestReassignments {
+    -- Shown on the settings page, under the reassignment switch.
+    facing operator: access/Operator
+
+    exposes:
+        operator.account_login
+        for each in Reassignments:
+            each.repository
+            each.number
+            each.happened_at
+            each.writes
+            each.failed
+
+    @guarantee NewestFirst
+        -- The pull request a pass wrote on last comes first, each with what
+        -- was written, which write failed and why.
+
+    @guarantee ListedForTheProcessOnly
+        -- The list goes with the process, like the schedule: after a restart
+        -- it is empty until a pass writes.
+}

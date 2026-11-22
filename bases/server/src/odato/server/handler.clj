@@ -179,6 +179,12 @@
                             #(ui/review-settings-fragment sys nil)
                             #(ui/settings-page sys)))
 
+      [:post ["settings" "reassignment"]]
+      (do (config/switch-reassignment! sys (ui/reassignment-switch @params))
+          (html-or-fragment request
+                            #(ui/reassignment-settings-fragment sys)
+                            #(ui/settings-page sys)))
+
       [:post ["settings"]]
       (let [outcome (config/save! sys (ui/settings-proposal @params))]
         (if (datastar-request? request)

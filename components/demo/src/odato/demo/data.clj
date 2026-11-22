@@ -106,6 +106,35 @@
                      :commits (commits 4 :success (- now (t/days 1)))
                      :reviews [(approved "grace" (- now (t/days 1)) "head")]})]}
 
+     ;; What the reassignment pass finds assigned to ada once it is switched
+     ;; on: one pull request of each verdict, a bot's change request, and a
+     ;; review ada was re-assigned after, which the pass leaves alone.
+     :assigned-pull-requests
+     (let [assigned (fn [owner name number facts]
+                      (merge {:repository {:owner owner :name name}
+                              :number number
+                              :url (str "https://github.com/" owner "/" name "/pull/" number)
+                              :assignees #{"ada"}
+                              :author-is-user true}
+                             facts))
+           ada-assigned (fn [& ats] (vec (for [at ats] {:assignee "ada" :assigned-at at})))]
+       [(assigned "acme" "gear" 77
+                  {:title "GER-12 Replace the fetch queue" :author "grace"
+                   :reviews [(approved "ada" (- now (t/hours 2)) "head")]
+                   :assignments (ada-assigned (- now (t/days 11)))})
+        (assigned "acme" "widget" 351
+                  {:title "WID-40 Rework the settings surface" :author "linus"
+                   :reviews [(changes "ada" (- now (t/days 3)) "stale")]
+                   :assignments (ada-assigned (- now (t/days 22)))})
+        (assigned "acme" "widget" 433
+                  {:title "Bump datascript to 1.7.5" :author "renovate" :author-is-user false
+                   :reviews [(changes "ada" (- now (t/hours 4)) "head")]
+                   :assignments (ada-assigned (- now (t/hours 5)))})
+        (assigned "acme" "gear" 81
+                  {:title "GER-15 Name the orphans in the day view" :author "margaret"
+                   :reviews [(changes "ada" (- now (t/days 1)) "old")]
+                   :assignments (ada-assigned (- now (t/days 4)) (- now (t/hours 12)))})])
+
      :activities
      ;; The last working day, not today: the timesheet shows five of those, and
      ;; a weekend would otherwise leave the demo with a day nothing can scan.

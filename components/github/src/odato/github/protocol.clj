@@ -16,3 +16,10 @@
   (-blob [this request])
   (-delete-branch [this request])
   (-review-comments [this request]))
+
+(defprotocol GithubAssignees
+  "What the reassignment pass asks: the open pull requests assigned to the
+  operator, and changes to a pull request's assignees."
+  (-assigned-pull-requests [this request])
+  (-add-assignee [this request])
+  (-remove-assignee [this request]))

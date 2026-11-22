@@ -28,6 +28,7 @@
     poly/discovery    {:local/root "components/discovery"}
     poly/owllie       {:local/root "components/owllie"}
     poly/review       {:local/root "components/review"}
+    poly/reassignment {:local/root "components/reassignment"}
     poly/ui           {:local/root "components/ui"}
     poly/demo         {:local/root "components/demo"}
     poly/server       {:local/root "bases/server"}}}
@@ -50,6 +51,7 @@
                  "components/discovery/test"
                  "components/owllie/test"
                  "components/review/test"
+                 "components/reassignment/test"
                  "components/ui/test"
                  "components/demo/test"
                  "bases/server/test"]

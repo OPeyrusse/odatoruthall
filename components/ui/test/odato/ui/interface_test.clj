@@ -5,6 +5,7 @@
             [odato.config.interface :as config]
             [odato.discovery.interface :as discovery]
             [odato.fixtures :as fix]
+            [odato.reassignment.interface :as reassignment]
             [odato.testing :as testing*]
             [odato.time.interface :as t]
             [odato.ui.interface :as ui]
@@ -197,6 +198,45 @@
     (is (str/includes? body "Collection settings"))
     (is (str/includes? body "take effect at the next collection"))
     (is (str/includes? body "apply to the snapshot in hand"))))
+
+(deftest the-settings-say-whether-reassignment-can-run
+  (let [sys (installation)]
+    (testing "off, and without the credential"
+      (let [body (ui/settings-page sys)]
+        (is (str/includes? body "Reassignment"))
+        (is (not (re-find #"<input checked=\"checked\"[^>]*name=\"enabled\"" body)))
+        (is (str/includes? body "GITHUB_ASSIGN_TOKEN"))
+        (is (str/includes? body "not set — a token that may change assignees"))))
+    (testing "on, with it"
+      (config/switch-reassignment! sys true)
+      (let [body (ui/reassignment-settings-fragment (assoc sys :assigner (:github sys)))]
+        (is (re-find #"<input checked=\"checked\"[^>]*name=\"enabled\"" body))
+        (is (not (str/includes? body "not set")))))
+    (is (true? (ui/reassignment-switch {"enabled" "on"})))
+    (is (false? (ui/reassignment-switch {})))))
+
+(deftest the-settings-list-the-latest-reassignments
+  (is (str/includes? (ui/settings-page (installation)) "None since the installation started."))
+  (let [assigned (fn [number verdict]
+                   {:repository {:owner "acme" :name "widget"} :number number
+                    :title (str "Pull request " number)
+                    :url (str "https://github.com/acme/widget/pull/" number)
+                    :assignees #{"ada"} :author "grace" :author-is-user true
+                    :reviews [{:reviewer "ada" :verdict verdict :submitted-at (- now (t/hours 1))}]
+                    :assignments []})
+        sys (testing*/configured!
+             {:github {:assigned-pull-requests [(assigned 7 :approved)
+                                                (assigned 8 :changes-requested)]
+                       :assignee-failures {:add-assignee :service-error}}})
+        sys (assoc sys :assigner (:github sys))]
+    (config/switch-reassignment! sys true)
+    (reassignment/pass! sys)
+    (let [body (ui/reassignment-settings-fragment sys)]
+      (is (str/includes? body "href=\"https://github.com/acme/widget/pull/7\""))
+      (is (str/includes? body "acme/widget#7"))
+      (is (str/includes? body "removed ada"))
+      (is (str/includes? body "assigning grace failed: service error"))
+      (is (not (str/includes? body "None since"))))))
 
 (deftest a-form-is-read-back-as-a-proposal
   (let [proposal (ui/settings-proposal {"repositories" "acme/widget\nacme/gear"
