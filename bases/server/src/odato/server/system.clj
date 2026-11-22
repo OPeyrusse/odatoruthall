@@ -18,6 +18,7 @@
             [odato.github.interface :as github]
             [odato.jira.interface :as jira]
             [odato.owllie.interface :as owllie]
+            [odato.reassignment.interface :as reassignment]
             [odato.review.interface :as review]
             [odato.time.interface :as t]
             [odato.turso.interface :as turso])
@@ -44,6 +45,7 @@
            :token (env "TURSO_TOKEN")
            :table-name (env "TURSO_TABLE")}
    :github {:token (env "GITHUB_TOKEN")
+            :assign-token (env "GITHUB_ASSIGN_TOKEN")
             :base-url (env "GITHUB_API_URL" "https://api.github.com")}
    :jira {:base-url (env "JIRA_BASE_URL")
           :email (env "JIRA_EMAIL")
@@ -118,10 +120,14 @@
        :jira (jira/mock-client (demo/jira-script now-ms))
        :launchers {:scheduled-task simulated :claude-cli simulated}
        :tune-launchers {:scheduled-task tuning :claude-cli tuning}
-       :results-writer gh})
-    (merge {:github (github/client (:github settings))
-            :jira (jira/client (:jira settings))}
-           (review-clients settings))))
+       :results-writer gh
+       :assigner gh})
+    (let [{:keys [token assign-token base-url]} (:github settings)]
+      (merge {:github (github/client {:token token :base-url base-url})
+              :jira (jira/client (:jira settings))
+              :assigner (when assign-token
+                          (github/client {:token assign-token :base-url base-url}))}
+             (review-clients settings)))))
 
 (defn- present-credentials!
   "A credential that was never offered stays absent, and the badge says so
@@ -205,6 +211,14 @@
                                            (catch Throwable e
                                              (log/warn e "the review tick failed"))))
                           5 15 TimeUnit/SECONDS)
+    ;; The reassignment pass falls due every minute, on its own schedule;
+    ;; ticking at the minute itself would let it slip to every other one.
+    (.scheduleAtFixedRate ^java.util.concurrent.ScheduledExecutorService (:scheduler sys)
+                          ^Runnable (fn []
+                                      (try (reassignment/tick! sys)
+                                           (catch Throwable e
+                                             (log/warn e "the reassignment tick failed"))))
+                          10 15 TimeUnit/SECONDS)
     ;; A storage keeps every node it has ever been handed until somebody says
     ;; otherwise: the tree is rewritten as it grows, and the old nodes are
     ;; still there. Once a day is plenty for one operator's worklog, and a file

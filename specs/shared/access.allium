@@ -93,6 +93,15 @@ entity GithubBudget {
     }
 }
 
+entity AssignmentCredential {
+    -- A second GitHub credential, which may change the assignees of the
+    -- tracked repositories' pull requests (gitdesk/reassignment). The
+    -- operator's own credential stays read-only. Only its presence is known:
+    -- it is never exercised to check it, and its owner need not be the
+    -- operator.
+    is_present: Boolean
+}
+
 ------------------------------------------------------------
 -- Defaults
 ------------------------------------------------------------
@@ -102,6 +111,8 @@ default Connection github_connection = { service: github, status: absent }
 default Connection jira_connection = { service: jira, status: absent }
 
 default GithubBudget github_budget = { status: available, remaining: 0 }
+
+default AssignmentCredential assignment_credential = { is_present: false }
 
 ------------------------------------------------------------
 -- Rules
@@ -135,6 +146,11 @@ rule ConnectionRefused {
         connection.last_checked_at = now
         connection.last_refusal = failure
         AccessLost(connection: connection, failure: failure)
+}
+
+rule AssignmentCredentialPresented {
+    when: AssignmentCredentialPresented()
+    ensures: assignment_credential.is_present = true
 }
 
 rule GithubBudgetRunsOut {
@@ -217,6 +233,7 @@ surface GithubConnectionIntegration {
 
     provides:
         CredentialPresented(github_connection)
+        AssignmentCredentialPresented()
         ConnectionCheckSucceeded(github_connection, gateway.account_login)
         ConnectionCheckRefused(github_connection, credential_rejected)
         GithubBudgetObserved(github_budget, gateway.budget_remaining, gateway.budget_resets_at)

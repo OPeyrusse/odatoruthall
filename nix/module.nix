@@ -74,7 +74,7 @@ in
       example = [ "%t/secrets/odatoruthall.env" ];
       description = ''
         Files of `NAME=value` lines read by systemd when the service starts: where the secrets go,
-        such as `GITHUB_TOKEN`, `JIRA_TOKEN`, `TURSO_TOKEN`, `OWLLIE_FIRE_TOKEN`, `OWLLIE_TUNE_FIRE_TOKEN` or `OWLLIE_RESULTS_TOKEN`.
+        such as `GITHUB_TOKEN`, `JIRA_TOKEN`, `TURSO_TOKEN`, `OWLLIE_FIRE_TOKEN`, `OWLLIE_TUNE_FIRE_TOKEN`, `OWLLIE_RESULTS_TOKEN` or `GITHUB_ASSIGN_TOKEN`.
         They stay out of the Nix store, and are written by whatever manages the secrets.
         systemd specifiers are expanded (`%h` the home directory, `%t` the runtime directory, ...).
         A path prefixed by `-` may be missing. Their values override those of `environment`.

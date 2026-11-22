@@ -11,6 +11,9 @@ Three applications, one server, one operator:
 - **worklog** — the operator's own work: a sliding window of the last five
   working days, the tasks worked on each of them, the lines that led to each
   task, and the time logged against it through the Jira worklog API.
+  Once a minute, it can also take the operator off the pull requests they
+  have approved, and hand those they requested changes on back to their
+  author.
 - **owldesk** — automated code reviews of pull requests, run by
   [Owllie](https://github.com/OPeyrusse/owllie) in a Claude cloud session:
   paste a pull request link, follow the run while it goes, then read its
@@ -35,6 +38,7 @@ leaves a badge saying so instead of breaking a dashboard.
 |---|---|---|
 | `GITHUB_TOKEN` | The operator's GitHub token. Its owner is the operator: "me" is always the token's owner. | — |
 | `GITHUB_API_URL` | Move it for GitHub Enterprise. | `https://api.github.com` |
+| `GITHUB_ASSIGN_TOKEN` | gitdesk: a token with *Pull requests* (or *Issues*) write on the tracked repositories, to change the assignees of the pull requests the operator has ruled on. Without it, reassignment is off and `GITHUB_TOKEN` stays read-only. GitHub shows its owner as the one who changed them. | unset |
 | `JIRA_BASE_URL` | The Jira Cloud site, e.g. `https://acme.atlassian.net`. | — |
 | `JIRA_EMAIL` | The account the token belongs to. | — |
 | `JIRA_TOKEN` | A Jira API token. | — |
@@ -75,6 +79,27 @@ $EDITOR .env
 `./scripts/run.sh` and `docker compose` both read that file. Nothing else does:
 plain `clojure -M:dev:run` and plain `docker run` read the environment they are
 given, so with those you export the variables yourself.
+
+## Reassignment
+
+The operator is assigned to a pull request to review it, and the assignment
+outlives the review. With the switch on in **settings › Reassignment** and
+`GITHUB_ASSIGN_TOKEN` given to the process, a pass runs every minute inside the
+collection window:
+
+- **approved** → the operator is removed from the assignees, and nothing else;
+- **changes requested** → the author is assigned, then the operator removed —
+  unless the author is not a GitHub user (a GitHub App's bot, a deleted
+  account), who is assigned nothing.
+
+The verdict is the operator's latest review that is not a comment, and it acts
+only when it is newer than the operator's latest assignment to the pull
+request: whoever re-assigns the operator after their review is respected until
+they review again. One GraphQL search a minute, with `GITHUB_TOKEN`, finds the
+open pull requests of the tracked repositories assigned to the operator — about
+one point of its 5000 an hour. A failed search or a spent budget skips the
+pass, and a failed write is retried by the next one; both are logged. The pass
+reads nothing gitdesk collected, which catches up at its next collection.
 
 ## owldesk
 
@@ -251,8 +276,8 @@ The variables of [Credentials](#credentials) that are not secrets are options of
 `services.odatoruthall.environment`. They are written in the Nix store, and
 systemd specifiers are expanded in them (`%h`, `%S`, …).
 
-The secrets — `GITHUB_TOKEN`, `JIRA_TOKEN`, `TURSO_TOKEN`, `OWLLIE_FIRE_TOKEN`,
-`OWLLIE_TUNE_FIRE_TOKEN`, `OWLLIE_RESULTS_TOKEN` — go in the files of `environmentFiles`, read by systemd
+The secrets — `GITHUB_TOKEN`, `GITHUB_ASSIGN_TOKEN`, `JIRA_TOKEN`, `TURSO_TOKEN`,
+`OWLLIE_FIRE_TOKEN`, `OWLLIE_TUNE_FIRE_TOKEN`, `OWLLIE_RESULTS_TOKEN` — go in the files of `environmentFiles`, read by systemd
 when the service starts, as `NAME=value` lines like `.env`. Whatever manages the
 secrets writes them: by default `~/.config/odatoruthall/env`, which may be
 missing (the leading `-`); `%t/…` puts one in the runtime directory instead.
@@ -309,6 +334,7 @@ Polylith, laid out one component per specification slice. It is plain
 | `components/demo` | the scripted data an installation with no credential runs on | — |
 | `components/pull-request` | the facts, and every classification read off them | `gitdesk/pull-request` |
 | `components/collector` | the collection cycle: queue, pages, quota waits, window | `gitdesk/collection` |
+| `components/reassignment` | the minute's pass taking the operator off the pull requests they ruled on | `gitdesk/reassignment` |
 | `components/work-item` | a key becomes a Jira issue, or is reported as one Jira refused | `worklog/work-item` |
 | `components/worklog` | days, entries, and what it means for time to reach Jira | `worklog/worklog` |
 | `components/discovery` | the day scan, attribution, and the orphans it keeps | `worklog/discovery` |

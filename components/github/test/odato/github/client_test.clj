@@ -101,3 +101,118 @@
         (let [q (searched kind tracked)]
           (is (str/starts-with? q start))
           (is (str/ends-with? q " repo:acme/gadget repo:acme/widget")))))))
+
+(defn- answering
+  "Runs `f` with a client against a local GitHub answering `body` with
+  `status` to every request, and answers what `f` returned with the requests
+  it received, as `{:method :path :body}`."
+  [status body f]
+  (let [received (atom [])
+        server (HttpServer/create (InetSocketAddress. "127.0.0.1" 0) 0)]
+    (.createContext server "/"
+                    (reify HttpHandler
+                      (handle [_ exchange]
+                        (swap! received conj
+                               {:method (.getRequestMethod exchange)
+                                :path (.getPath (.getRequestURI exchange))
+                                :body (json/read-str (slurp (.getRequestBody exchange))
+                                                     :key-fn keyword)})
+                        (let [bytes (.getBytes (json/write-str body) "UTF-8")]
+                          (.add (.getResponseHeaders exchange)
+                                "content-type" "application/json")
+                          (.sendResponseHeaders exchange status (count bytes))
+                          (doto (.getResponseBody exchange) (.write bytes) (.close))))))
+    (.start server)
+    (try
+      (let [answer (f (github/client {:base-url (str "http://127.0.0.1:"
+                                                     (.getPort (.getAddress server)))
+                                      :token "t" :timeout-ms 5000}))]
+        {:answer answer :received @received})
+      (finally (.stop server 0)))))
+
+(def ^:private assigned-page
+  {:data {:rateLimit {:remaining 4990 :resetAt "2026-09-15T11:00:00Z"}
+          :search
+          {:pageInfo {:hasNextPage true :endCursor "Y3Vyc29yOjUw"}
+           :nodes [{:number 12 :title "Cache the snapshot"
+                    :url "https://github.com/acme/widget/pull/12"
+                    :repository {:name "widget" :owner {:login "acme"}}
+                    :author {:__typename "User" :login "grace"}
+                    :reviews {:nodes [{:author {:login "ada"} :state "COMMENTED"
+                                       :submittedAt "2026-09-15T09:00:00Z"}
+                                      {:author {:login "ada"} :state "PENDING"
+                                       :submittedAt nil}
+                                      {:author {:login "ada"} :state "CHANGES_REQUESTED"
+                                       :submittedAt "2026-09-15T10:00:00Z"}]}
+                    :timelineItems {:nodes [{:createdAt "2026-09-14T08:00:00Z"
+                                             :assignee {:login "ada"}}
+                                            {:createdAt "2026-09-14T08:05:00Z"
+                                             :assignee {}}]}}
+                   {:number 13 :title "Bump the parser"
+                    :url "https://github.com/acme/widget/pull/13"
+                    :repository {:name "widget" :owner {:login "acme"}}
+                    :author {:__typename "Bot" :login "dependabot"}
+                    :reviews {:nodes []}
+                    :timelineItems {:nodes []}}
+                   {:number 14 :title "An orphan"
+                    :url "https://github.com/acme/widget/pull/14"
+                    :repository {:name "widget" :owner {:login "acme"}}
+                    :author nil
+                    :reviews {:nodes []}
+                    :timelineItems {:nodes []}}]}}})
+
+(deftest the-assigned-search-is-held-to-the-tracked-repositories
+  (let [{:keys [received]}
+        (answering 200 assigned-page
+                   #(github/assigned-pull-requests
+                     % {:login "ada" :cursor "Y3Vyc29yOjA="
+                        :repositories #{{:owner "acme" :name "widget"}
+                                        {:owner "acme" :name "gadget"}}}))
+        variables (:variables (:body (first received)))]
+    (is (= "is:pr is:open assignee:ada repo:acme/gadget repo:acme/widget" (:q variables)))
+    (is (= "ada" (:login variables)) "whose reviews are read")
+    (is (= "Y3Vyc29yOjA=" (:cursor variables)))))
+
+(deftest an-assigned-pull-request-reads-its-author-the-operator-s-reviews-and-the-assignments
+  (let [{:keys [answer]}
+        (answering 200 assigned-page
+                   #(github/assigned-pull-requests
+                     % {:login "ada" :repositories #{{:owner "acme" :name "widget"}}}))
+        [by-grace by-a-bot orphan] (:pull-requests answer)]
+    (is (= {:repository {:owner "acme" :name "widget"}
+            :number 12
+            :title "Cache the snapshot"
+            :url "https://github.com/acme/widget/pull/12"
+            :author "grace"
+            :author-is-user true
+            :reviews [{:reviewer "ada" :verdict :commented
+                       :submitted-at (t/parse-instant "2026-09-15T09:00:00Z")}
+                      {:reviewer "ada" :verdict :changes-requested
+                       :submitted-at (t/parse-instant "2026-09-15T10:00:00Z")}]
+            :assignments [{:assignee "ada"
+                           :assigned-at (t/parse-instant "2026-09-14T08:00:00Z")}]}
+           by-grace)
+        "a pending review is not a review yet, and an assignee that is not a user is no one")
+    (is (= ["dependabot" false] ((juxt :author :author-is-user) by-a-bot)))
+    (is (= [nil false] ((juxt :author :author-is-user) orphan)) "a deleted account")
+    (is (= "Y3Vyc29yOjUw" (:next-cursor answer)))
+    (is (= 4990 (get-in answer [:budget :remaining])))))
+
+(deftest an-assignee-is-written-on-the-pull-request-s-issue
+  (let [pr {:owner "acme" :name "widget" :number 12 :login "grace"}]
+    (testing "added"
+      (let [{:keys [answer received]} (answering 201 {} #(github/add-assignee % pr))]
+        (is (:written answer))
+        (is (= [{:method "POST" :path "/repos/acme/widget/issues/12/assignees"
+                 :body {:assignees ["grace"]}}]
+               received))))
+    (testing "removed"
+      (let [{:keys [answer received]} (answering 200 {} #(github/remove-assignee % pr))]
+        (is (:written answer))
+        (is (= [{:method "DELETE" :path "/repos/acme/widget/issues/12/assignees"
+                 :body {:assignees ["grace"]}}]
+               received))))
+    (testing "refused"
+      (is (= :credential-rejected
+             (:failure (:answer (answering 401 {:message "Bad credentials"}
+                                           #(github/add-assignee % pr)))))))))

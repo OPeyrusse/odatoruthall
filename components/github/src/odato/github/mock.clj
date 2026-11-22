@@ -27,11 +27,19 @@
                                               :closed-at nil :head-sha ...}}
      :branches {\"acme/owllie-results\" {\"review/...\" {\"owllie/meta.json\" \"{...}\"}}}
      :review-comments {\"acme/widget#12\" [{:id :author :path :line :side ...}]}
-     :delete-failure :credential-rejected}       ; deleting a branch fails
+     :delete-failure :credential-rejected        ; deleting a branch fails
+     :assigned-pull-requests [{:repository {:owner \"acme\" :name \"widget\"}
+                               :number 12 :assignees #{\"ada\"}
+                               :author \"grace\" :author-is-user true
+                               :reviews [...] :assignments [...]}]
+     :assignee-failures {:add-assignee :service-error}}  ; this write always fails
 
   A repository missing from `:repositories` is not found. The branches are
   held in the client's own state, so `write-branch!` can move one under a
-  reader's eyes, the way a running review does.
+  reader's eyes, the way a running review does. So are the assigned pull
+  requests: the search answers those whose `:assignees` hold the login asked
+  for, in a tracked repository, and an assignee written is added to or
+  removed from `:assignees`, so the next search sees it.
 
   `:budget-sequence` is consumed one entry per answer and its last entry
   repeats, which is how a test makes the budget run out halfway through a
@@ -90,6 +98,23 @@
 (defn- answer [state script op request f]
   (swap! state update :calls conj {:op op :request request})
   (merge (f) {:budget (next-budget! state script)}))
+
+(defn- same-pull-request? [pr request]
+  (and (= (repo-key (:repository pr)) (repo-key request))
+       (= (:number pr) (:number request))))
+
+(defn- write-assignee! [state script op request f]
+  (answer state script op request
+          #(if-let [failure (get-in script [:assignee-failures op])]
+             {:failure failure}
+             (do (swap! state update :assigned-pull-requests
+                        (fn [prs]
+                          (mapv (fn [pr]
+                                  (if (same-pull-request? pr request)
+                                    (update pr :assignees (fnil f #{}) (:login request))
+                                    pr))
+                                prs)))
+                 {:written true}))))
 
 (defn- find-branch [state request]
   (let [branches (get-in @state [:branches (repo-key request)])]
@@ -184,11 +209,31 @@
             #(if-let [failure (:delete-failure script)]
                {:failure failure}
                (do (swap! state update-in [:branches (repo-key request)] dissoc (:branch request))
-                   {:deleted true})))))
+                   {:deleted true}))))
+
+  protocol/GithubAssignees
+  (-assigned-pull-requests [_ {:keys [login repositories cursor] :as request}]
+    (answer state script :assigned-pull-requests request
+            #(if-let [failure (get-in script [:failures :assigned-pull-requests])]
+               {:failure failure}
+               (let [tracked (set (map repo-key repositories))
+                     assigned (vec (for [pr (:assigned-pull-requests @state)
+                                         :when (contains? (:assignees pr) login)
+                                         :when (contains? tracked (repo-key (:repository pr)))]
+                                     (dissoc pr :assignees)))
+                     {:keys [items next-cursor]} (page script assigned cursor)]
+                 {:pull-requests items :next-cursor next-cursor}))))
+
+  (-add-assignee [_ request]
+    (write-assignee! state script :add-assignee request conj))
+
+  (-remove-assignee [_ request]
+    (write-assignee! state script :remove-assignee request disj)))
 
 (defn client [script]
   (->MockGithub script (atom {:calls [] :budget-index -1
-                              :branches (or (:branches script) {})})))
+                              :branches (or (:branches script) {})
+                              :assigned-pull-requests (vec (:assigned-pull-requests script))})))
 
 (defn write-branch!
   "Adds or replaces files on a branch of a mock repository, creating it if

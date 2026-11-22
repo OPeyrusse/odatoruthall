@@ -72,6 +72,9 @@
    :task/source               {:db/valueType :db.type/ref}
    :schedule/id               {:db/unique :db.unique/identity}
 
+   ;; When the reassignment pass is due, and whether one is running.
+   :reassignment/scope        {:db/unique :db.unique/identity}
+
    ;; What a day is busy with: a scan or a submission, never both.
    :day-process/starts-at     {:db/unique :db.unique/identity}
 

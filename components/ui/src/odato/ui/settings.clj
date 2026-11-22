@@ -5,9 +5,11 @@
   The form says which half of the configuration each field belongs to, because
   that is when it takes effect — collection settings shape the next collection,
   presentation settings apply to the snapshot already on screen. Saving starts
-  no collection."
+  no collection. The reassignment switch is saved apart, by a form of its
+  own."
   (:require [clojure.string :as str]
             [odato.config.interface :as config]
+            [odato.reassignment.interface :as reassignment]
             [odato.time.interface :as t]
             [odato.ui.parts :as parts]))
 
@@ -134,6 +136,39 @@
       (str "The worklog's own parameters — five working days, one minute to "
            "24 hours on an entry — are fixed by the specification and are not "
            "settings.")]]))
+
+(defn reassignment-section
+  [sys]
+  (let [enabled? (:reassignment-enabled (config/current sys))
+        credential? (reassignment/assigner-available? sys)]
+    [:section {:id "reassignment-settings" :class parts/card}
+     [:div {:class parts/card-heading}
+      [:h2 {:class parts/heading-text} "Reassignment"]
+      (parts/chip "saved apart" :sky)]
+     [:form {:method "post" :action "/settings/reassignment"
+             :data-on-submit "@post('/settings/reassignment', {contentType: 'form'})"
+             :class "flex flex-col gap-3 p-4"}
+      [:p {:class parts/muted}
+       (str "Every minute inside the collection window, take me off the open pull "
+            "requests of the tracked repositories I have approved, and hand those I "
+            "requested changes on back to their author.")]
+      [:label {:class "flex cursor-pointer items-center gap-2 text-sm"}
+       [:input {:type "checkbox" :name "enabled" :value "on" :class "accent-sky-600"
+                :checked enabled?}]
+       "Reassign the pull requests I have ruled on"]
+      [:div {:class "flex flex-wrap items-center gap-2 text-sm"}
+       (parts/dot (if credential? :green :neutral))
+       [:span {:class "font-mono text-xs"} "GITHUB_ASSIGN_TOKEN"]
+       [:span {:class parts/muted}
+        (if credential?
+          "set"
+          "not set — a token that may change assignees; without it, nothing is reassigned")]]
+      [:div
+       [:button {:class parts/primary-button :type "submit"} "Save reassignment"]]]]))
+
+(defn read-reassignment-switch
+  [params]
+  (= "on" (get params "enabled")))
 
 (defn read-proposal
   "The form, as a proposal the configuration component can judge."

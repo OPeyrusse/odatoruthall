@@ -1,6 +1,7 @@
 (ns odato.config.interface-test
   (:require [clojure.test :refer [deftest is testing]]
             [odato.config.interface :as config]
+            [odato.events.interface :as events]
             [odato.testing :as testing*]
             [odato.time.interface :as t]))
 
@@ -65,3 +66,12 @@
   (is (= #{{:owner "acme" :name "widget"} {:owner "acme" :name "gear"}}
          (config/parse-repositories "acme/widget\nacme/gear\n\n")))
   (is (= #{"ada" "grace"} (config/parse-members "ada, grace"))))
+
+(deftest the-reassignment-switch-is-off-until-switched-and-saved-apart
+  (let [sys (testing*/system)]
+    (is (false? (:reassignment-enabled (config/current sys))))
+    (is (:reassignment-enabled (config/switch-reassignment! sys true)))
+    (is (empty? (events/recent (:bus sys))) "switching it announces nothing")
+    (config/save! sys a-valid-proposal)
+    (is (:reassignment-enabled (config/current sys)) "saving the rest leaves it alone")
+    (is (false? (:reassignment-enabled (config/switch-reassignment! sys false))))))

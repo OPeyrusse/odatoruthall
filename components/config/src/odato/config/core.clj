@@ -75,6 +75,7 @@
                                        (:failing-commits defaults))
                   :merged-window-ms (or (:config/merged-window-ms row)
                                         (:merged-window-ms defaults))}
+     :reassignment-enabled (boolean (:config/reassignment-enabled row))
      :updated-at (:config/updated-at row)}))
 
 (defn collectable? [sys]
@@ -146,3 +147,8 @@
           (events/publish! (:bus sys) {:type :config/presentation-settings-changed
                                        :config after}))
         {:ok true :config after}))))
+
+(defn switch-reassignment! [sys enabled?]
+  (db/put! (conn sys) :config/scope :installation
+           {:config/reassignment-enabled (boolean enabled?)})
+  (current sys))

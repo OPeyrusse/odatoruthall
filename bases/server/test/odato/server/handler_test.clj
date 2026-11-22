@@ -143,6 +143,20 @@
         (is (str/includes? (:body response) "no repositories"))
         (is (= 1 (count (:repositories (config/current sys)))))))))
 
+(deftest the-reassignment-switch-is-saved-apart
+  (let [sys (installation)]
+    (let [response (POST sys "/settings/reassignment" "enabled=on")]
+      (is (:reassignment-enabled (config/current sys)))
+      (is (str/includes? (:body response) "id=\"reassignment-settings\"")
+          "Datastar is answered the card alone"))
+    (testing "an unchecked box switches it off"
+      (POST sys "/settings/reassignment" "")
+      (is (false? (:reassignment-enabled (config/current sys)))))
+    (testing "without scripts, the whole settings page"
+      (let [response (POST sys "/settings/reassignment" "enabled=on" {})]
+        (is (= 200 (:status response)))
+        (is (str/includes? (:body response) "Collection settings"))))))
+
 (deftest the-timesheet-shows-five-days
   (let [sys (installation)
         body (:body (GET sys "/worklog"))]

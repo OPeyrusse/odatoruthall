@@ -198,6 +198,22 @@
     (is (str/includes? body "take effect at the next collection"))
     (is (str/includes? body "apply to the snapshot in hand"))))
 
+(deftest the-settings-say-whether-reassignment-can-run
+  (let [sys (installation)]
+    (testing "off, and without the credential"
+      (let [body (ui/settings-page sys)]
+        (is (str/includes? body "Reassignment"))
+        (is (not (re-find #"<input checked=\"checked\"[^>]*name=\"enabled\"" body)))
+        (is (str/includes? body "GITHUB_ASSIGN_TOKEN"))
+        (is (str/includes? body "not set — a token that may change assignees"))))
+    (testing "on, with it"
+      (config/switch-reassignment! sys true)
+      (let [body (ui/reassignment-settings-fragment (assoc sys :assigner (:github sys)))]
+        (is (re-find #"<input checked=\"checked\"[^>]*name=\"enabled\"" body))
+        (is (not (str/includes? body "not set")))))
+    (is (true? (ui/reassignment-switch {"enabled" "on"})))
+    (is (false? (ui/reassignment-switch {})))))
+
 (deftest a-form-is-read-back-as-a-proposal
   (let [proposal (ui/settings-proposal {"repositories" "acme/widget\nacme/gear"
                                         "members" "ada grace"
