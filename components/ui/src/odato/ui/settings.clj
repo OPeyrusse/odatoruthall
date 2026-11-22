@@ -137,6 +137,36 @@
            "24 hours on an entry — are fixed by the specification and are not "
            "settings.")]]))
 
+(defn- write-text [{:keys [op login failure]}]
+  (let [[done doing] (case op
+                       :add ["assigned" "assigning"]
+                       :remove ["removed" "removing"])]
+    (if failure
+      (str doing " " login " failed: " (parts/humanise failure))
+      (str done " " login))))
+
+(defn- latest-reassignments [sys]
+  (let [listed (reassignment/latest sys)
+        now-ms (t/now-ms (:clock sys))]
+    [:div {:class "flex flex-col gap-2 border-t border-slate-200 p-4 dark:border-slate-800"}
+     [:h3 {:class "text-sm font-medium"} "Latest reassignments"]
+     (if (empty? listed)
+       [:p {:class parts/faint} "None since the installation started."]
+       [:ul {:class "flex flex-col gap-2"}
+        (for [{:keys [repository number title url at writes]} listed
+              :let [failed? (some :failure writes)]]
+          [:li {:class "flex flex-wrap items-center gap-x-2 gap-y-1 text-sm"}
+           (parts/dot (if failed? :red :green))
+           [:a {:href url :class "font-mono text-xs hover:underline"}
+            (str (config/repository-key repository) "#" number)]
+           [:span {:class "min-w-0 truncate"} title]
+           [:span {:class (if failed? "text-rose-700 dark:text-rose-300" parts/muted)}
+            (str/join ", " (map write-text writes))]
+           [:span {:class parts/faint} (parts/relative-time now-ms at)]])])
+     [:p {:class parts/faint}
+      (str "The latest " reassignment/reassignments-listed " pull requests, the last pass "
+           "on each; a failed write is tried again at the next pass.")]]))
+
 (defn reassignment-section
   [sys]
   (let [enabled? (:reassignment-enabled (config/current sys))
@@ -164,7 +194,8 @@
           "set"
           "not set — a token that may change assignees; without it, nothing is reassigned")]]
       [:div
-       [:button {:class parts/primary-button :type "submit"} "Save reassignment"]]]]))
+       [:button {:class parts/primary-button :type "submit"} "Save reassignment"]]]
+     (latest-reassignments sys)]))
 
 (defn read-reassignment-switch
   [params]

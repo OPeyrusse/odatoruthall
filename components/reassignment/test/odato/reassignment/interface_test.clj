@@ -119,6 +119,48 @@
     (is (= [nil :service-error] (map :failure (:writes answer))))
     (is (= [[12 :add "grace"] [12 :remove "ada"]] (written (reassignment/pass! sys))))))
 
+;; ------------------------------------------------------------ what is listed
+
+(defn- listed [sys]
+  (mapv (fn [{:keys [number writes]}] [number (mapv (juxt :op :login :failure) writes)])
+        (reassignment/latest sys)))
+
+(deftest the-latest-reassignments-are-listed-newest-first
+  (let [{:keys [sys]} (pass [(pull-request 12 :reviews [(review :approved "2026-09-15T10:00:00Z")])
+                             (pull-request 13 :reviews [(review :changes-requested "2026-09-15T10:00:00Z")])])]
+    (is (= [[13 [[:add "grace" nil] [:remove "ada" nil]]]
+            [12 [[:remove "ada" nil]]]]
+           (listed sys))
+        "one line per pull request, its writes in the order they were made")
+    (is (= {:repository widget :number 12 :title "Pull request 12"
+            :url "https://github.com/acme/widget/pull/12" :at (testing*/now sys)}
+           (dissoc (last (reassignment/latest sys)) :writes)))
+    (testing "a pass that writes nothing leaves the list as it was"
+      (testing*/tick! sys (t/minutes 1))
+      (is (= [] (written (reassignment/pass! sys))))
+      (is (= [13 12] (map first (listed sys)))))))
+
+(deftest a-failed-write-is-listed-and-its-retry-replaces-it
+  (let [changes [(pull-request 12 :reviews [(review :changes-requested "2026-09-15T10:00:00Z")])
+                 (pull-request 13 :reviews [(review :approved "2026-09-15T10:00:00Z")])]
+        {:keys [sys]} (pass changes :github {:assignee-failures {:add-assignee :service-error}})]
+    (is (= [[13 [[:remove "ada" nil]]]
+            [12 [[:add "grace" :service-error]]]]
+           (listed sys)))
+    (testing*/tick! sys (t/minutes 1))
+    (reassignment/pass! sys)
+    (is (= [[12 [[:add "grace" :service-error]]]
+            [13 [[:remove "ada" nil]]]]
+           (listed sys))
+        "a write failing every minute keeps one line, and leaves the others on the list")
+    (is (= (testing*/now sys) (:at (first (reassignment/latest sys)))))))
+
+(deftest only-the-latest-pull-requests-are-listed
+  (let [many (for [n (range 1 26)] (pull-request n :reviews [(review :approved "2026-09-15T10:00:00Z")]))
+        {:keys [sys]} (pass many)]
+    (is (= reassignment/reassignments-listed (count (reassignment/latest sys))))
+    (is (= (range 25 5 -1) (map first (listed sys))) "the newest")))
+
 ;; ---------------------------------------------------------- when it runs
 
 (def approved [(pull-request 12 :reviews [(review :approved "2026-09-15T10:00:00Z")])])

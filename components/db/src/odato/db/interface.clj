@@ -11,7 +11,7 @@
     :volatile  connections, the GitHub budget, the snapshot, its sources, its
                pull requests, the cycles and the scans in flight, what the
                results branches of the reviews hold, and the reassignment
-               pass's schedule
+               pass's schedule and latest reassignments
 
   Both are in memory. `:durable` has a file seam — give the store a `:file`
   and what it holds is written there after every transaction and read back at

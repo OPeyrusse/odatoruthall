@@ -6,7 +6,8 @@
   credentials, and how the mock clients are exercised outside the tests. The
   data below is scripted so that every classification the specification names
   has something under it — a stuck pull request, an aging one, a merge train,
-  a day with lines that group under a ticket and one loose end."
+  a day with lines that group under a ticket and one loose end, and a pull
+  request for every case of the reassignment pass."
   (:require [odato.demo.data :as data]
             [odato.demo.reviews :as reviews]))
 

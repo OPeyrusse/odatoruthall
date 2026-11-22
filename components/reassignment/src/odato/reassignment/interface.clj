@@ -32,14 +32,25 @@
   (core/tick! sys))
 
 (defn pass!
-  "One pass, here and now. Answers `{:writes [{:repository :number :url :op
-  :login :failure?}]}`, `:op` being `:add` or `:remove`, in the order they
+  "One pass, here and now. Answers `{:writes [{:repository :number :title :url
+  :op :login :failure?}]}`, `:op` being `:add` or `:remove`, in the order they
   were made; or `{:skipped reason}`, reason being `:switched-off`,
   `:no-assignment-credential`, `:github-unavailable`, `:nothing-tracked`,
   `:budget-exhausted`, or the failure that ended the search. The writes on a
-  pull request stop at the first that fails."
+  pull request stop at the first that fails. What it wrote is listed by
+  `latest`."
   [sys]
   (core/pass! sys))
+
+(def reassignments-listed core/reassignments-listed)
+
+(defn latest
+  "What the passes wrote, newest first: `[{:repository :number :title :url
+  :at :writes [{:op :login :failure?}]}]`, one per pull request, the writes
+  of its latest pass in the order they were made. At most
+  `reassignments-listed`; lost on restart, like the schedule."
+  [sys]
+  (core/latest sys))
 
 (defn assigner-available?
   "Whether the installation holds the assignment credential."

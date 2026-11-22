@@ -21,6 +21,10 @@
 -- (settings/Configuration.reassignment_enabled) and the installation holds a
 -- credential that may change assignees (access/AssignmentCredential). The
 -- search uses the operator's own GitHub credential, which stays read-only.
+--
+-- What the passes wrote, done or failed, is listed on the settings page
+-- under the switch (LatestReassignments), one line per pull request. The
+-- list lives with the process, like the schedule.
 
 use "../shared/access.allium" as access
 use "../shared/config.allium" as settings
@@ -30,6 +34,7 @@ use "../shared/config.allium" as settings
 ------------------------------------------------------------
 
 enum ReviewVerdict { approved | changes_requested | commented | dismissed }
+enum AssigneeOperation { add | remove }
 
 ------------------------------------------------------------
 -- Value Types
@@ -38,6 +43,12 @@ enum ReviewVerdict { approved | changes_requested | commented | dismissed }
 value OperatorReview {
     verdict: ReviewVerdict
     submitted_at: Timestamp
+}
+
+value AssigneeWrite {
+    operation: AssigneeOperation
+    login: String
+    failure: String?                    -- why GitHub refused it
 }
 
 ------------------------------------------------------------
@@ -65,12 +76,24 @@ entity ReassignmentSchedule {
     next_pass_at: Timestamp
 }
 
+entity Reassignment {
+    -- What the latest pass to write on a pull request's assignees wrote.
+    repository: settings/RepositoryReference
+    number: Integer
+    happened_at: Timestamp
+    writes: List<AssigneeWrite>         -- in the order they were made, the
+                                        -- first that failed ending them
+
+    failed: writes.any(w => w.failure != null)
+}
+
 ------------------------------------------------------------
 -- Config
 ------------------------------------------------------------
 
 config {
     pass_interval: Duration = 1.minutes
+    reassignments_listed: Integer = 20
 }
 
 ------------------------------------------------------------
@@ -195,13 +218,76 @@ rule AuthorAssigned {
         -- to the repository, and the operator is removed all the same.
 }
 
+rule OperatorTakenOff {
+    when: AssigneeRemoved(pull_request, login)
+    let verdict = latest_verdict(pull_request.operator_reviews)
+    ensures:
+        if verdict.verdict = changes_requested and pull_request.author_is_user:
+            PullRequestReassigned(
+                pull_request: pull_request,
+                writes: [
+                    { operation: add, login: pull_request.author, failure: null },
+                    { operation: remove, login: login, failure: null }])
+        else:
+            PullRequestReassigned(
+                pull_request: pull_request,
+                writes: [{ operation: remove, login: login, failure: null }])
+}
+
 rule AssigneeWriteFails {
     when: AssigneeWriteFailed(pull_request, login, failure)
-    ensures: ReassignmentFailed(pull_request: pull_request, failure: failure)
+    let verdict = latest_verdict(pull_request.operator_reviews)
+    let operator = access/Connection{service: github}.account_login
+    ensures:
+        if login != operator:
+            PullRequestReassigned(
+                pull_request: pull_request,
+                writes: [{ operation: add, login: login, failure: failure }])
+        else if verdict.verdict = changes_requested and pull_request.author_is_user:
+            PullRequestReassigned(
+                pull_request: pull_request,
+                writes: [
+                    { operation: add, login: pull_request.author, failure: null },
+                    { operation: remove, login: login, failure: failure }])
+        else:
+            PullRequestReassigned(
+                pull_request: pull_request,
+                writes: [{ operation: remove, login: login, failure: failure }])
 
     @guidance
-        -- Logged. Nothing is undone and nothing is remembered: the pull
-        -- request is still a candidate, and the next pass retries.
+        -- Logged. Nothing is undone: the pull request is still a candidate,
+        -- and the next pass retries.
+}
+
+------------------------------------------------------------
+-- Rules — what is listed
+------------------------------------------------------------
+
+rule ReassignmentListed {
+    when: PullRequestReassigned(pull_request, writes)
+    let earlier = Reassignment{repository: pull_request.repository, number: pull_request.number}
+    ensures:
+        if exists earlier:
+            earlier.happened_at = now
+            earlier.writes = writes
+        else:
+            Reassignment.created(
+                repository: pull_request.repository,
+                number: pull_request.number,
+                happened_at: now,
+                writes: writes)
+
+    @guidance
+        -- One line per pull request, its latest pass's: a write failing
+        -- every minute replaces its own line rather than pushing the other
+        -- pull requests off the list.
+}
+
+rule OldestReassignmentDropped {
+    when: _: Reassignment.created
+    requires: Reassignments.count > config.reassignments_listed
+    let oldest = min_by(Reassignments, r => r.happened_at)
+    ensures: not exists oldest
 }
 
 ------------------------------------------------------------
@@ -219,6 +305,7 @@ surface AssigneesIntegration {
         for pull_request in AssignedPullRequests:
             AssignedPullRequestFound(pull_request)
             AssigneeAdded(pull_request, pull_request.author)
+            AssigneeRemoved(pull_request, gateway.account_login)
             AssigneeWriteFailed(pull_request, gateway.account_login, service_error)
 
     @guarantee OnlyTrackedRepositoriesAreAskedFor
@@ -234,4 +321,26 @@ surface AssigneesIntegration {
         -- Requested reviewers, labels and everything else on the pull request
         -- are left as they are, and no assignee is ever added to a pull
         -- request the operator was not assigned to.
+}
+
+surface LatestReassignments {
+    -- Shown on the settings page, under the reassignment switch.
+    facing operator: access/Operator
+
+    exposes:
+        operator.account_login
+        for each in Reassignments:
+            each.repository
+            each.number
+            each.happened_at
+            each.writes
+            each.failed
+
+    @guarantee NewestFirst
+        -- The pull request a pass wrote on last comes first, each with what
+        -- was written, which write failed and why.
+
+    @guarantee ListedForTheProcessOnly
+        -- The list goes with the process, like the schedule: after a restart
+        -- it is empty until a pass writes.
 }

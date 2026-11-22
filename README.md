@@ -101,6 +101,11 @@ one point of its 5000 an hour. A failed search or a spent budget skips the
 pass, and a failed write is retried by the next one; both are logged. The pass
 reads nothing gitdesk collected, which catches up at its next collection.
 
+Under the switch, the settings panel lists the latest reassignments, done or
+failed: one line per pull request, what its latest pass wrote, the newest
+first. The list goes with the process. With `ODATO_DEMO=1`, switching it on
+plays every case on scripted pull requests, inside the collection window.
+
 ## owldesk
 
 Setting up the Owllie side — the results repository with its

@@ -8,6 +8,8 @@
 
 (def pass-interval-ms (t/minutes 1))
 
+(def reassignments-listed 20)
+
 (defn- conn [sys] (db/volatile* (:store sys)))
 (defn- now [sys] (t/now-ms (:clock sys)))
 
@@ -100,6 +102,7 @@
         failure (or (:failure answer) (when (:retry answer) :budget-exhausted))
         write (cond-> {:repository (:repository pull-request)
                        :number (:number pull-request)
+                       :title (:title pull-request)
                        :url (:url pull-request)
                        :op op
                        :login login}
@@ -116,6 +119,34 @@
               (cond-> (conj done write) (:failure write) reduced)))
           []
           (writes login pull-request)))
+
+(defn- reassignments
+  [at writes]
+  (for [[first-write :as on-one] (partition-by (juxt :repository :number) writes)]
+    (assoc (select-keys first-write [:repository :number :title :url])
+           :at at
+           :writes (mapv #(select-keys % [:op :login :failure]) on-one))))
+
+(defn- latest-of-each
+  "A write failing every minute replaces its own line, rather than pushing the
+  other pull requests off the list."
+  [newest-first]
+  (let [pull-request (juxt :repository :number)
+        listed? (fn [kept r] (some #(= (pull-request r) (pull-request %)) kept))]
+    (->> newest-first
+         (reduce (fn [kept r] (if (listed? kept r) kept (conj kept r))) [])
+         (take reassignments-listed)
+         vec)))
+
+(defn latest [sys]
+  (vec (:reassignment/latest (db/entity-map (db/db (conn sys)) :reassignment/scope :installation))))
+
+(defn- record! [sys writes]
+  (when (seq writes)
+    (ensure-schedule! sys)
+    (db/put! (conn sys) :reassignment/scope :installation
+             {:reassignment/latest
+              (latest-of-each (concat (reverse (reassignments (now sys) writes)) (latest sys)))})))
 
 (defn pass! [sys]
   (let [in-force (config/current sys)
@@ -135,7 +166,9 @@
         (if-let [failure (:failure found)]
           (do (log/warn "reassignment: pass skipped, the search failed:" (name failure))
               {:skipped failure})
-          {:writes (into [] (mapcat #(reassign! assigner login %)) (:pull-requests found))})))))
+          (let [writes (into [] (mapcat #(reassign! assigner login %)) (:pull-requests found))]
+            (record! sys writes)
+            {:writes writes}))))))
 
 (defn tick! [sys]
   (access/replenish-due! sys)
