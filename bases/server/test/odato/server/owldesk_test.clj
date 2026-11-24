@@ -1,7 +1,8 @@
 (ns odato.server.owldesk-test
   "owldesk through its routes: the list, launching, one review, judging,
   the review settings and the cleanup."
-  (:require [clojure.string :as str]
+  (:require [clojure.data.json :as json]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [odato.demo.reviews :as demo]
             [odato.github.interface]
@@ -243,3 +244,49 @@
             (is (= 200 (:status refused)))
             (is (str/includes? (:body refused) "already starting or running"))))))
     (is (= 404 (:status (POST sys "/owldesk/review/20200101T0000Z-0000/run-again" "" {}))))))
+
+(deftest reviews-and-tunings-are-listed-apart
+  (testing "with nothing to list, no panel is shown, but the reading is said"
+    (let [sys (testing/connected! {:github {:repositories {"activeviam/owllie-results" {:files #{".owllie-results"}}}}})
+          sys (assoc sys :launchers {} :tune-launchers {})
+          _ (review/ensure-defaults! sys)
+          page (:body (GET sys "/owldesk"))]
+      (is (not (str/includes? page ">Reviews<")))
+      (is (not (str/includes? page "Owllie tunings")))
+      (is (str/includes? page "Read the branches now"))))
+  (let [sys (installation)
+        base (str "/owldesk/review/" done-id)]
+    (POST sys "/settings/owldesk" settings-form)
+    (review/read-results! sys)
+    (testing "reviews only: no tunings panel"
+      (let [page (:body (GET sys "/owldesk"))]
+        (is (str/includes? page ">Reviews<"))
+        (is (not (str/includes? page "Owllie tunings")))))
+    (POST sys (str base "/remarks") (form "kind" "general" "note" "Too verbose.") {})
+    (POST sys (str base "/send") "")
+    (let [tune-id (:batch (first (review/remarks sys done-id)))
+          branch (str "tune/" tune-id)
+          pr-url "https://github.com/acme/owllie/pull/7"]
+      (odato.github.interface/mock-write-branch!
+       (:github sys) {:owner "activeviam" :name "owllie-results"} branch
+       (assoc (demo/tuning-files tune-id 1 5)
+              "owllie/status.json"
+              (json/write-str (demo/tuning-status "done" now [{:label "Pull request" :url pr-url
+                                                                            :kind "pull_request"}]))))
+      (review/read-results! sys)
+      (let [page (:body (GET sys "/owldesk"))
+            tunings (subs page (str/index-of page "Owllie tunings"))]
+        (testing "the tuning has a panel of its own, below the reviews"
+          (is (< (str/index-of page ">Reviews<") (str/index-of page "Owllie tunings")))
+          (is (str/includes? tunings (str "/owldesk/tuning/" tune-id)))
+          (is (str/includes? tunings "remarks on acme/widget #412"))
+          (is (str/includes? tunings pr-url)))
+        (testing "and is not listed among the reviews"
+          (is (not (str/includes? (subs page 0 (str/index-of page "Owllie tunings"))
+                                  (str "/owldesk/tuning/" tune-id))))
+          (is (= [done-id] (map :run-id (review/reviews sys))))))
+      (testing "a tuning deleted from the list goes back to the list"
+        (let [response (POST sys (str "/owldesk/tuning/" tune-id "/remove") "back=%2Fowldesk" {})]
+          (is (= 303 (:status response)))
+          (is (= "/owldesk" (get-in response [:headers "location"])))
+          (is (not (str/includes? (:body (GET sys "/owldesk")) "Owllie tunings"))))))))
