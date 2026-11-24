@@ -1,7 +1,8 @@
 -- allium: 3
 --
 -- owldesk — what the operator sees of the reviews: every pull request
--- reviewed, with its latest run and how many it had; one run in full, while
+-- reviewed, with its latest run and how many it had, and apart from them the
+-- tunings of Owllie the operator's remarks led to; one run in full, while
 -- it runs and once it is done, among the runs of its pull request, with the
 -- remarks the operator writes on it for Owllie; one tuning in full, from the
 -- remarks sent to the pull request on Owllie's rules; and the
@@ -17,10 +18,12 @@ use "./tuning.allium" as tuning
 ------------------------------------------------------------
 
 surface Reviews {
-    -- Every review the installation knows of, and the way to ask for one.
+    -- Every review the installation knows of, and the way to ask for one;
+    -- below, apart, every tuning of Owllie.
     facing operator: access/Operator
 
     let reviews = review/Reviews
+    let tunings = tuning/Tunings
     let recent = review/ReviewLaunches where fired_at + 1.hours > now
 
     exposes:
@@ -45,12 +48,33 @@ surface Reviews {
             each.is_done
             each.is_failed
             each.never_started
+        for each in tunings:
+            each.run_id
+            each.launch.pull_request
+            each.launch.fired_at
+            each.run.state
+            each.run.failure
+            each.run.pull_request_url
+            each.run.pull_request_state
+            each.run.pull_request_is_draft
+            each.run.pull_request_mergeable
+            each.run.pull_request_checks_failing
+            each.is_starting
+            each.is_running
+            each.is_stalled
+            each.is_failed
+            each.never_started
 
     provides:
         OperatorRequestsReview(String, String?)
+        for each in reviews where not is_active:
+            OperatorRemovesReview(each)
+        for each in tunings where not is_active:
+            tuning/OperatorRemovesTuning(each)
 
     related:
         ReviewPage(reviews)
+        TuningPage(tunings)
         ReviewSettingsPanel
 
     @guarantee GroupedByPullRequest
@@ -58,7 +82,23 @@ surface Reviews {
         -- per pull request: how many runs it had, and its most recent run --
         -- where it stands and what it found, in the headline the run wrote.
         -- The earlier runs are not listed here; they are chosen from the
-        -- review page, which the line opens on the most recent run.
+        -- review page, which the line opens on the most recent run. A run
+        -- not in flight can be deleted from its line.
+
+    @guarantee TuningsApart
+        -- The tunings -- what the operator's remarks taught Owllie -- are
+        -- listed in a panel of their own, below the reviews, the most recent
+        -- first: each with what it changes, the pull request whose review the
+        -- remarks were on, where it stands, what it found, and its pull
+        -- request on Owllie with that pull request's state. A tuning is never
+        -- listed among the reviews, and one not in flight can be deleted from
+        -- its line.
+
+    @guarantee NoEmptyPanel
+        -- A panel with nothing to list is not shown: no review, no reviews
+        -- panel; no tuning, no tunings panel. When the branches were last
+        -- read, whether that failed, and the way to read them now are said
+        -- below the panels, whether there is one or not.
 
     @guarantee WhatPreventsALaunchIsSaid
         -- When a review cannot be asked for -- no results repository, one not

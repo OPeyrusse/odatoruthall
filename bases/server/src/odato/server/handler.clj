@@ -349,9 +349,11 @@
               outcome (review/remove-tuning! sys (nth segments 2))]
           (if (:ok outcome)
             {:status 303
-             :headers {"location" (if-let [rid (:review-run-id tn)]
-                                    (str "/owldesk/review/" rid "#remarks")
-                                    "/owldesk")}
+             :headers {"location" (cond
+                                    ;; Deleted from the list: back to the list.
+                                    (= "/owldesk" (param "back")) "/owldesk"
+                                    (:review-run-id tn) (str "/owldesk/review/" (:review-run-id tn) "#remarks")
+                                    :else "/owldesk")}
              :body ""}
             (not-found sys (str "The tuning could not be removed: "
                                 (str/replace (name (:fault outcome)) "-" " ") "."))))

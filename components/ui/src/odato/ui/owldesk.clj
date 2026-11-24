@@ -173,23 +173,29 @@
 
 ;; ------------------------------------------------------------------ the list
 
+(defn- bin-button
+  "A form posting to `action`, drawn as a bin, after `confirm`."
+  [action label confirm & [hidden]]
+  [:form {:method "post" :action action :class "ml-auto"
+          :onsubmit (str "return confirm('" confirm "')")}
+   (for [[k v] hidden] [:input {:type "hidden" :name k :value v}])
+   [:button {:type "submit" :title label :aria-label label
+             :class (str parts/button " px-2!")}
+    [:svg {:viewBox "0 0 24 24" :class "h-4 w-4" :fill "none" :stroke "currentColor"
+           :stroke-width "2" :stroke-linecap "round" :stroke-linejoin "round"
+           :aria-hidden "true"}
+     [:path {:d "M3 6h18"}]
+     [:path {:d "M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"}]
+     [:path {:d "M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"}]
+     [:path {:d "M10 11v6M14 11v6"}]]]])
+
 (defn- trash-button
   "Deletes a review and its results branch, from the list: the same action as
   the review page's Remove, drawn as a bin."
   [r]
   (when-not (review/active? r)
-    [:form {:method "post" :action (str "/owldesk/review/" (:run-id r) "/remove")
-            :class "ml-auto"
-            :onsubmit "return confirm('Delete this review and its results branch?')"}
-     [:button {:type "submit" :title "Delete this review" :aria-label "Delete this review"
-               :class (str parts/button " px-2!")}
-      [:svg {:viewBox "0 0 24 24" :class "h-4 w-4" :fill "none" :stroke "currentColor"
-             :stroke-width "2" :stroke-linecap "round" :stroke-linejoin "round"
-             :aria-hidden "true"}
-       [:path {:d "M3 6h18"}]
-       [:path {:d "M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"}]
-       [:path {:d "M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"}]
-       [:path {:d "M10 11v6M14 11v6"}]]]]))
+    (bin-button (str "/owldesk/review/" (:run-id r) "/remove") "Delete this review"
+                "Delete this review and its results branch?")))
 
 (defn- review-line [sys r]
   (let [now-ms (now sys)]
@@ -222,43 +228,101 @@
       (run-count (count reviews))]
      [:ul (review-line sys latest)]]))
 
-(defn- reviews-card [sys]
-  (let [groups (review/by-pull-request sys)
-        by-repository (group-by #(config/repository-key (get-in % [:pull-request :repository]))
-                                groups)
-        {read-at :at polling-failure :failure reading :reading} (review/last-read sys)]
-    ;; While the branches are read, the card carries the same rainbow ring as
-    ;; a day being scanned in the worklog.
+(defn- reviews-card
+  "The reviews of pull requests, by repository then pull request. While the
+  branches are read, the card carries the same rainbow ring as a day being
+  scanned in the worklog."
+  [sys groups reading]
+  (let [by-repository (group-by #(config/repository-key (get-in % [:pull-request :repository]))
+                                groups)]
     [:section {:class (str parts/card (when reading " busy-glow"))}
      [:div {:class parts/card-heading}
       [:h2 {:class parts/heading-text} "Reviews"]
-      [:div {:class "flex items-center gap-2"}
-       (when reading (parts/chip "reading the branches" :sky))
-       [:form {:method "post" :action "/owldesk/refresh"
-               :data-on-submit "@post('/owldesk/refresh')"}
-        [:button {:class parts/button :type "submit" :disabled reading
-                  :title (when reading "The branches are being read")}
-         "Read the branches now"]]]]
-     (if (empty? groups)
-       (parts/empty-state "No review yet. Paste a pull request link above.")
-       (for [[repository gs] (sort-by key by-repository)]
-         [:div
-          [:div {:class (str "bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600 "
-                             "dark:bg-slate-800/50 dark:text-slate-300 " separated)}
-           repository]
-          [:ul (map #(pull-request-row sys %) gs)]]))
-     [:p {:class (str "px-4 py-2 " parts/faint " " separated)}
+      [:span {:class parts/faint} (plural (count groups) "pull request")]]
+     (for [[repository gs] (sort-by key by-repository)]
+       [:div
+        [:div {:class (str "bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600 "
+                           "dark:bg-slate-800/50 dark:text-slate-300 " separated)}
+         repository]
+        [:ul (map #(pull-request-row sys %) gs)]])]))
+
+(declare tuning-chip pull-request-chips)
+
+(defn- tuning-row
+  "One tuning: what it changes, the review its remarks came from, where it
+  stands, what it found, and its pull request on Owllie."
+  [sys tn]
+  (let [now-ms (now sys)
+        reviewed (get-in tn [:launch :pull-request])
+        review-run-id (:review-run-id tn)]
+    [:li {:class (str "flex flex-col gap-1 px-4 py-3 " separated)}
+     [:div {:class "flex flex-wrap items-center gap-x-2 gap-y-1"}
+      [:a {:href (tuning-href (:run-id tn))
+           :class "font-medium text-slate-900 hover:underline dark:text-slate-100"}
+       (or (:title tn) (str "Tuning " (:run-id tn)))]
+      (when (get-in reviewed [:repository :name])
+        (if review-run-id
+          [:a {:href (str (review-href review-run-id) "#remarks") :class (str parts/faint " hover:underline")}
+           (str "remarks on " (pr-label reviewed))]
+          [:span {:class parts/faint} (str "remarks on " (pr-label reviewed))]))]
+     [:div {:class "flex flex-wrap items-center gap-x-3 gap-y-1 py-1 text-sm"}
+      [:a {:href (tuning-href (:run-id tn)) :class "font-mono text-xs hover:underline"} (:run-id tn)]
+      (tuning-chip tn)
+      (when (:asked-at tn)
+        [:span {:class parts/muted} "asked " (parts/relative-time now-ms (:asked-at tn))])
+      (headline tn)
+      (when-let [failure (get-in tn [:run :error :code])]
+        [:span {:class parts/faint} failure])
+      (when-let [pr (:pull-request tn)]
+        (list [:a {:href (:url pr) :target "_blank" :rel "noreferrer" :class "underline"}
+               "Pull request on Owllie ↗"]
+              (pull-request-chips pr)))
+      (when-not (:active? tn)
+        (bin-button (str "/owldesk/tuning/" (:run-id tn) "/remove") "Delete this tuning"
+                    "Delete this tuning and its results branch? Its pull request stays."
+                    {"back" "/owldesk"}))]]))
+
+(defn- tunings-card
+  "The tunings: what the operator's remarks taught Owllie, apart from the
+  reviews of pull requests."
+  [sys tunings reading]
+  [:section {:class (str parts/card (when reading " busy-glow"))}
+   [:div {:class parts/card-heading}
+    [:h2 {:class parts/heading-text} "Owllie tunings"]
+    [:span {:class parts/faint} (plural (count tunings) "tuning")]]
+   [:ul (map #(tuning-row sys %) tunings)]])
+
+(defn- reading-line
+  "When the branches were last read, whether it failed, and the way to read
+  them now: below the panels, shown even when there is none."
+  [sys reading]
+  (let [{read-at :at polling-failure :failure} (review/last-read sys)]
+    [:div {:class "flex flex-wrap items-center justify-between gap-2 px-1"}
+     [:p {:class parts/faint}
       (if read-at
         (list "Branches last read " (parts/relative-time (now sys) read-at) ".")
         "The branches have not been read yet.")
-      (when polling-failure (str " The last reading failed: " (parts/humanise polling-failure) "."))]]))
+      (when polling-failure (str " The last reading failed: " (parts/humanise polling-failure) "."))]
+     [:div {:class "flex items-center gap-2"}
+      (when reading (parts/chip "reading the branches" :sky))
+      [:form {:method "post" :action "/owldesk/refresh"
+              :data-on-submit "@post('/owldesk/refresh')"}
+       [:button {:class parts/button :type "submit" :disabled reading
+                 :title (when reading "The branches are being read")}
+        "Read the branches now"]]]]))
 
 (defn body
-  "The way to ask for a review, and the list of reviews."
+  "The way to ask for a review; the reviews of pull requests; the tunings of
+  Owllie, apart. A panel with nothing to list is not shown."
   [sys {:keys [outcome]}]
-  [:div {:id "owldesk" :class "flex flex-col gap-4"}
-   (launch-card sys outcome)
-   (reviews-card sys)])
+  (let [groups (review/by-pull-request sys)
+        tunings (review/tunings sys)
+        reading (:reading (review/last-read sys))]
+    [:div {:id "owldesk" :class "flex flex-col gap-4"}
+     (launch-card sys outcome)
+     (when (seq groups) (reviews-card sys groups reading))
+     (when (seq tunings) (tunings-card sys tunings reading))
+     (reading-line sys reading)]))
 
 ;; ----------------------------------------------------------- one review
 ;;
