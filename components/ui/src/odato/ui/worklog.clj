@@ -10,6 +10,7 @@
   one place to put the time: the task. Lines that belong to no task are shown
   apart, with their titles, and can be attached to a task from here."
   (:require [clojure.string :as str]
+            [hiccup2.core :as h]
             [odato.access.interface :as access]
             [odato.discovery.interface :as discovery]
             [odato.time.interface :as t]
@@ -206,16 +207,30 @@
      [:span {:class (str parts/muted " min-w-0 truncate")}
       (get-in row [:work-item :summary])]]))
 
+(defn editor-attributes
+  "What a ticket's cell on a day carries for the cell editor: the day, the
+  ticket, and its time as typed, empty when the day does not carry it. A cell
+  whose entry cannot be edited carries none of it, and a title saying why."
+  [day k entry]
+  (if (or (nil? entry) (:editable? entry))
+    {:data-cell "" :data-day (t/format-day (:starts-at day)) :data-key k
+     :data-time (or (:entered-text entry) "") :style "cursor: text"}
+    {:title (if (= :submitted (:status entry))
+              "On its way to Jira: it can be edited once Jira has answered."
+              (str "Jira holds this task's time under " (:jira-worklog-count entry)
+                   " worklogs; change them in Jira."))}))
+
 (defn- ticket-cell
   "What one ticket holds on one day: its time and where that time stands with
-  Jira, or nothing when the day does not carry it."
-  [today? scanning? index day entry]
-  [:div {:class (str (cell-class index today?) " flex flex-wrap items-center gap-1.5 text-sm")}
+  Jira, or nothing when the day does not carry it, and what the cell editor
+  needs to open over it (`editor-attributes`)."
+  [today? scanning? index day k entry]
+  [:div (merge {:class (str (cell-class index today?) " flex flex-wrap items-center gap-1.5 text-sm")}
+               (editor-attributes day k entry))
    (when entry
      (list
-      [:a {:href (day-href day)
-           :class (str "font-medium tabular-nums hover:underline"
-                       (when scanning? (str " " in-flight-text)))}
+      [:span {:class (str "font-medium tabular-nums"
+                          (when scanning? (str " " in-flight-text)))}
        (or (:entered-text entry) "—")]
       (status-chip entry)
       (when (:differs-from-jira? entry)
@@ -223,6 +238,46 @@
                 :title (str "Submitting the day sends "
                             (t/format-duration (:duration-ms entry)) " instead.")}
          (str "Jira holds " (t/format-duration (:jira-logged-ms entry)))])))])
+
+(def ^:private open-editor-js
+  "Opens the editor over the cell double-clicked, holding the cell's time as
+  the field's default value. Scrolling or resizing leaves the field, so it
+  never floats over another cell."
+  (str "document.addEventListener('dblclick', function (evt) {"
+       " var cell = evt.target.closest('[data-cell]'); if (!cell) return;"
+       " var r = cell.getBoundingClientRect(), form = document.getElementById('cell-editor'),"
+       " field = form.elements.text;"
+       " form.style.top = r.top + 'px'; form.style.left = r.left + 'px';"
+       " form.style.width = r.width + 'px'; form.style.height = r.height + 'px';"
+       " form.dataset.day = cell.dataset.day; form.elements.key.value = cell.dataset.key;"
+       " field.defaultValue = cell.dataset.time; field.value = cell.dataset.time;"
+       " form.style.display = 'flex'; field.focus(); field.select() });"
+       "function leaveCell (evt) {"
+       " var field = document.getElementById('cell-editor').elements.text;"
+       " if (evt.target !== field && document.activeElement === field) field.blur() }"
+       "window.addEventListener('scroll', leaveCell, true);"
+       "window.addEventListener('resize', leaveCell);"))
+
+(defn cell-editor
+  "The timesheet's cell editor: leaving its field posts the text to the cell's
+  day when it differs from the cell's; Enter leaves it, Escape leaves it
+  unchanged."
+  []
+  (list
+   [:script (h/raw open-editor-js)]
+   [:form {:id "cell-editor" :style "display: none; position: fixed; z-index: 20"
+           :class "items-center bg-white dark:bg-slate-950"
+           :data-on-submit "ctx.el.elements.text.blur()"}
+    [:input {:type "hidden" :name "key"}]
+    [:input {:type "text" :name "text" :autocomplete "off" :placeholder "1h 30m"
+             :aria-label "time"
+             :class (str parts/input " h-full text-right tabular-nums")
+             :data-on-blur (str "ctx.el.form.style.display = 'none'; "
+                                "ctx.el.value !== ctx.el.defaultValue && "
+                                "@post('/worklog/' + ctx.el.form.dataset.day + '/cells', "
+                                "{contentType: 'form'})")
+             :data-on-keydown (str "evt.key === 'Escape' && "
+                                   "(ctx.el.value = ctx.el.defaultValue, ctx.el.blur())")}]]))
 
 (defn body
   "The fragment SSE patches in place while a day scan runs."
@@ -275,7 +330,7 @@
             (for [[i day] indexed]
               (ticket-cell (= today (:starts-at day))
                            (contains? scanned-days (:starts-at day))
-                           i day
+                           i day (:work-item-key row)
                            (get-in row [:entries (:starts-at day)])))))
          [:div {:class "col-span-5 border-t border-slate-200 dark:border-slate-800"}
           (parts/empty-state "Nothing on these days yet. Name a task on a day, or scan it.")])]]]))

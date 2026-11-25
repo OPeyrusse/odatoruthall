@@ -63,8 +63,9 @@
 
 (defn worklog-page [sys]
   (document (layout/page sys {:title "worklog" :section :worklog}
-                         [:div {:data-on-load "@get('/sse/worklog')"}
-                          (worklog/body sys)])))
+                         (list [:div {:data-on-load "@get('/sse/worklog')"}
+                                (worklog/body sys)]
+                               (worklog/cell-editor)))))
 
 (defn day-page [sys day]
   (document (layout/page sys {:title "worklog" :section :worklog}
