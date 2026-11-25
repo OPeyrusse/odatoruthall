@@ -107,6 +107,13 @@
 
 ;; ------------------------------------------------------------ entering time
 
+(defn duration-fault
+  "Whether `text` can be an entry's time, on whatever entry it is put:
+  `:unreadable-duration` or `:duration-out-of-bounds` when it cannot, nil when
+  it can. Blank text is unreadable. The checks `enter-time!` makes of the text."
+  [text]
+  (core/duration-fault text))
+
 (defn enter-time!
   "OperatorEntersTime. The text is kept as typed alongside the duration it
   means. A refused entry changes nothing.

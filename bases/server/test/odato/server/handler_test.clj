@@ -186,6 +186,43 @@
         (is (str/includes? body "1h 30m"))
         (is (str/includes? body "in Jira"))))))
 
+(deftest a-timesheet-cell-puts-a-time-on-a-ticket-s-day
+  (let [sys (installation)
+        on-today #(:entries (worklog/day sys (t/parse-day today)))
+        cell (str "/worklog/" today "/cells")]
+    (testing "blank text names nothing"
+      (POST sys cell "key=ABC-1&text=+")
+      (is (empty? (on-today))))
+    (testing "a day that does not carry the ticket names it, then takes the time"
+      (POST sys cell "key=ABC-1&text=1h+30m")
+      (is (= [["ABC-1" "1h 30m" (t/minutes 90)]]
+             (map (juxt :work-item-key :entered-text :duration-ms) (on-today)))))
+    (testing "a day that carries it takes the new time on the same entry"
+      (let [id (:id (first (on-today)))]
+        (POST sys cell "key=ABC-1&text=2h")
+        (is (= [[id "2h"]] (map (juxt :id :entered-text) (on-today))))))
+    (testing "a refused text leaves the time as it was"
+      (POST sys cell "key=ABC-1&text=soon")
+      (is (= ["2h"] (map :entered-text (on-today)))))
+    (testing "without scripts, the answer goes back to the timesheet"
+      (is (= "/worklog" (get-in (POST sys cell "key=ABC-1&text=2h" {})
+                                [:headers "location"]))))))
+
+(deftest a-refused-text-names-nothing-on-an-empty-cell
+  (let [sys (installation)
+        cell (str "/worklog/" today "/cells")]
+    (doseq [text ["soon" "30h"]]
+      (POST sys cell (str "key=ABC-1&text=" text))
+      (is (empty? (:entries (worklog/day sys (t/parse-day today)))) text))))
+
+(deftest a-cell-on-a-day-the-timesheet-does-not-show-names-nothing
+  (let [sys (installation)]
+    (doseq [day ["not-a-day" "2026-09-01"]]
+      (is (= 204 (:status (POST sys (str "/worklog/" day "/cells") "key=ABC-1&text=1h")))
+          day))
+    (is (empty? (mapcat :entries (worklog/window sys))))
+    (is (empty? (:entries (worklog/day sys (t/parse-day "2026-09-01")))))))
+
 (deftest a-day-outside-the-window-is-not-a-page
   (let [sys (installation)]
     (is (= 404 (:status (GET sys "/worklog/2026-09-01"))))
