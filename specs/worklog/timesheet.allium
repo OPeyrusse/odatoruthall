@@ -86,6 +86,7 @@ surface Timesheet {
                 entry.jira_logged
                 entry.jira_worklogs
                 entry.differs_from_jira
+                entry.is_editable
                 entry.last_failure
 
     provides:
@@ -124,6 +125,18 @@ surface Timesheet {
         -- time typed here moves a ticket up. Tickets touched at the same
         -- moment, or with no line at all, read in ticket order, the latter
         -- last.
+
+    @guarantee TimeIsTypedInItsCell
+        -- A double-click on a ticket's cell opens a field over it, holding
+        -- the time as it was typed, or nothing on a day that does not carry
+        -- the ticket. Leaving the field enters what it holds, as the day's own
+        -- page does; on a day that does not carry the ticket, the ticket is
+        -- named there first. Enter leaves the field; Escape leaves it and
+        -- enters nothing, and so does leaving it unchanged. A refused text
+        -- leaves the cell as it was, naming nothing. The timesheet being
+        -- redrawn while the operator types does not wipe the field. A cell
+        -- whose entry cannot be edited -- on its way to Jira, or held there
+        -- under several worklogs -- does not open, and says why.
 
     @guarantee FiveWorkingDaysAlwaysShow
         -- The window is the last five working days, Monday to Friday in UTC,
@@ -315,9 +328,3 @@ surface WorklogPersistence {
         -- are still there tomorrow, and scanning it again adds what has
         -- happened since.
 }
-
-------------------------------------------------------------
--- Open questions
-------------------------------------------------------------
-
-open question "Should time be typed straight into the timesheet's cells, rather than on the day's own page?"

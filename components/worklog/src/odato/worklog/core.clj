@@ -281,21 +281,27 @@
 
 ;; ------------------------------------------------------------ entering time
 
+(defn duration-fault
+  "The fault that refuses `text` as an entry's time, or nil when it can be one."
+  [text]
+  (let [entered (t/parse-duration text)]
+    (cond
+      (not (t/readable-duration? text)) :unreadable-duration
+      (< (long entered) (long (:min-entry-duration-ms config))) :duration-out-of-bounds
+      (> (long entered) (long (:max-entry-duration-ms config))) :duration-out-of-bounds)))
+
 (defn enter-time!
   "TimeEntered / TimeRefused."
   [sys entry-id text]
   (let [e (entry sys entry-id)
-        entered (t/parse-duration text)]
-    (cond
-      (nil? e) {:ok false :fault :no-such-entry}
-      (not (:editable? e)) {:ok false :fault :entry-in-flight}
-      (not (within-window? sys (:day-starts-at e))) {:ok false :fault :day-outside-window}
-      (not (t/readable-duration? text)) {:ok false :fault :unreadable-duration}
-      (< (long entered) (long (:min-entry-duration-ms config)))
-      {:ok false :fault :duration-out-of-bounds}
-      (> (long entered) (long (:max-entry-duration-ms config)))
-      {:ok false :fault :duration-out-of-bounds}
-      :else
+        entered (t/parse-duration text)
+        fault (cond
+                (nil? e) :no-such-entry
+                (not (:editable? e)) :entry-in-flight
+                (not (within-window? sys (:day-starts-at e))) :day-outside-window
+                :else (duration-fault text))]
+    (if fault
+      {:ok false :fault fault}
       (do
         ;; An acknowledged entry edited here is drafted again and keeps the
         ;; Jira worklog it already has.

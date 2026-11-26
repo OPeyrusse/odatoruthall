@@ -294,6 +294,12 @@
         (is (= 5 (occurrences body ">Scan</button>")))
         (is (= 5 (occurrences body "Submit to Jira")))))))
 
+(deftest the-cell-editor-sits-outside-the-patched-timesheet
+  (let [sys (installation)]
+    (is (str/includes? (ui/worklog-page sys) "id=\"cell-editor\""))
+    (is (not (str/includes? (ui/worklog-fragment sys) "id=\"cell-editor\""))
+        "so a patch of the timesheet leaves what is being typed alone")))
+
 (defn- task-shown-by
   "The Datastar expression the task row for `k` is shown under."
   [body k]
@@ -357,7 +363,7 @@
 
 (def ^:private greyed-in-card
   "A ticket's time on the timesheet, while its day is scanned."
-  "font-medium tabular-nums hover:underline text-slate-600 dark:text-slate-400")
+  "font-medium tabular-nums text-slate-600 dark:text-slate-400")
 
 (def ^:private greyed-on-day
   "A ticket's key on its day, while the day is scanned."

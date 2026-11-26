@@ -454,6 +454,19 @@
           (worklog/name-task! sys starts-at (str/trim (str (param "key"))))
           (done request (str "/worklog/" (second segments))))
 
+        ;; /worklog/:day/cells
+        (and (= :post request-method) (= 3 (count segments))
+             (= "worklog" (first segments)) (= "cells" (nth segments 2)))
+        (let [day (day-or-nil sys (second segments))
+              issue-key (str/trim (str (param "key")))
+              text (str (param "text"))]
+          (when (and day (not (worklog/duration-fault text)))
+            (when-let [entry (or (some #(when (= issue-key (:work-item-key %)) %)
+                                       (:entries day))
+                                 (:entry (worklog/name-task! sys (:starts-at day) issue-key)))]
+              (worklog/enter-time! sys (:id entry) text)))
+          (done request "/worklog"))
+
         ;; /worklog/entries/:id/time
         (and (= :post request-method) (= 4 (count segments))
              (= ["worklog" "entries"] (subvec segments 0 2))
